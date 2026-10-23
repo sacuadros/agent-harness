@@ -41,6 +41,36 @@ REMOTE = [
     (r'(?:wrangler\s+(?:deploy|pages\s+deploy)|vercel(?:\s|$)|netlify\s+deploy|fly\s+deploy)',
      'deploy'),
 ]
+# Credential files, matched on a normalized command (quotes dropped, every home spelling -> ~).
+# Private keys, globs and the bare ~/.ssh folder are denied; public keys and config stay readable.
+CREDENTIAL = re.compile(
+    r'~/(?:\.ssh(?:/(?:id_[\w-]+|[^\s/]*_key|[^\s/]*\.pem|[^\s/]*[*?\[][^\s/]*)(?![\w.-]*\.pub)'
+    r'|/?(?=[\s;&|)]|$))'
+    r'|\.aws\b|\.gnupg\b|\.netrc\b|\.git-credentials\b|\.docker/config\.json|\.kube/config\b'
+    r'|\.config/gh/hosts\.yml|\.config/gcloud\b|\.codex/auth\.json|\.pi/agent/auth\.json)')
+# Commands that use a key or name a path without printing secrets (git covers -m messages).
+USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'git', 'kubectl'}
+KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|internet)-password\b.*'
+                             r'\s-\w*[wg]\w*|dump-keychain\b.*\s-d)')
+
+
+def normalize_paths(cmd):
+    cmd = re.sub(r'["\']', '', cmd)
+    cmd = re.sub(r'\$\(\s*echo\s+~\s*\)|\$\{?HOME\}?|/Users/[^/\s]+|/home/[^/\s]+', '~', cmd)
+    return re.sub(r'/(?:\./)+', '/', re.sub(r'/{2,}', '/', cmd))
+
+
+def reads_credentials(cmd):
+    cmd = normalize_paths(cmd)
+    if KEYCHAIN_SECRET.search(cmd):
+        return True
+    for segment in re.split(r'[;&|\n]+', cmd):
+        words = [w for w in segment.split() if not re.match(r'^\w+=', w)]
+        while words and words[0] in ('sudo', 'command', 'env', 'exec'):
+            words.pop(0)
+        if words and words[0].rsplit('/', 1)[-1] not in USES_KEYS and CREDENTIAL.search(segment):
+            return True
+    return False
 CODEGRAPH_FORBIDDEN = re.compile(SEG + r'codegraph\s+(uninit|install|uninstall|upgrade)\b')
 # What Codex execpolicy prefix rules can match once it unwraps `bash -lc` into plain commands.
 PLAIN_SEG = r'(?:^|[;&|\n]\s*)'
@@ -85,6 +115,10 @@ def bash_decision(data, codex=False):
 
 
 def _bash_decision(cmd):
+    if reads_credentials(cmd):
+        return decision('deny', 'Regla global: no leer credenciales (claves privadas, ~/.aws, '
+                                '~/.gnupg, tokens de CLI) ni imprimir secretos del Llavero. Pide al '
+                                'usuario que lo haga si es imprescindible.')
     if CODEGRAPH_FORBIDDEN.search(cmd):
         return decision('deny', 'Regla global: nunca ejecutar codegraph uninit/install/'
                                 'uninstall/upgrade.')
@@ -189,6 +223,26 @@ def selftest():
     assert bash('git worktree add /tmp/wt feature') == 'deny'
     assert bash('git worktree add -b x ../repo-worktrees/x') is None
     assert bash('ls -la') is None
+    for secret in ('cat ~/.ssh/id_ed25519', 'cp ~/.aws/credentials /tmp/x', 'base64 $HOME/.netrc',
+                   'security find-generic-password -s engram-cloud-token -w',
+                   'head ~/.codex/auth.json', 'gpg --export-secret-keys > k; cat ~/.gnupg/x'):
+        assert bash(secret) == 'deny', secret
+        assert bash_decision({'tool_input': {'command': secret}}, codex=True)[
+            'hookSpecificOutput']['permissionDecision'] == 'deny', secret
+    for fine in ('cat ~/.ssh/config', 'cat ~/.ssh/id_ed25519.pub', 'ssh-keygen -lf ~/.ssh/known_hosts',
+                 'aws s3 ls', 'security find-generic-password -s x'):
+        assert bash(fine) in (None, 'ask'), fine
+    # Review findings: globs, directories, quoting, Keychain flag variants.
+    for secret in ('cat ~/.ssh/*', 'cat ~/.ssh/id_*', 'tar cz ~/.ssh', 'cp -r ~/.aws x',
+                   'cat "$HOME"/.ssh/id_rsa', "cat ~/'.ssh'/id_rsa", 'cat ~/.git-credentials',
+                   'security find-generic-password -s x -g', 'security find-generic-password -ws x',
+                   '/usr/bin/security find-internet-password -s x -w', 'security dump-keychain -d'):
+        assert bash(secret) == 'deny', secret
+    # Using a key without printing it, or naming a path in a commit message, is fine.
+    for fine in ('ssh-add ~/.ssh/id_ed25519', 'ssh -i ~/.ssh/id_ed25519 host uptime',
+                 'kubectl --kubeconfig ~/.kube/config get pods',
+                 'git commit -m "fix: guard ~/.aws/ reads"', 'cat ~/.ssh/id_ed25519-cert.pub'):
+        assert bash(fine) != 'deny', fine
 
     tmp = Path(tempfile.mkdtemp())
     cfg = HOME / '.claude' / 'settings.json'

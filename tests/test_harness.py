@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -232,6 +233,67 @@ class Hooks(unittest.TestCase):
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'selftest failed: {broken}', result.stdout)
+
+
+class Secrets(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def test_permissions_merge_keeps_user_entries(self):
+        settings = self.home / '.claude' / 'settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'permissions': {
+            'allow': ['Bash(npm run build)'], 'deny': ['Read(./secret.txt)']}}))
+        harness('install', '--home', str(self.home))
+        permissions = json.loads(settings.read_text())['permissions']
+        self.assertEqual(permissions['allow'], ['Bash(npm run build)'])
+        self.assertEqual(permissions['deny'][0], 'Read(./secret.txt)')
+        self.assertIn('Read(~/.aws/**)', permissions['deny'])
+        self.assertIn('Read(**/.env)', permissions['ask'])
+        self.assertEqual(len(permissions['deny']), len(set(permissions['deny'])))
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_check_flags_literal_secrets_without_printing_them(self):
+        harness('install', '--home', str(self.home))
+        settings = self.home / '.claude' / 'settings.json'
+        data = json.loads(settings.read_text())
+        data['env'] = {'OPENAI_API_KEY': 'sk-very-secret', 'PATH': '/bin'}
+        settings.write_text(json.dumps(data, indent=2) + '\n')
+        result = run('check', '--home', str(self.home))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'secret: {settings}: env.OPENAI_API_KEY', result.stdout)
+        self.assertNotIn('sk-very-secret', result.stdout)
+
+    def test_check_ignores_token_counts_and_env_var_names(self):
+        harness('install', '--home', str(self.home))
+        settings = self.home / '.claude' / 'settings.json'
+        data = json.loads(settings.read_text())
+        data['env'] = {'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '32000'}
+        settings.write_text(json.dumps(data, indent=2) + '\n')
+        config = self.home / '.codex' / 'config.toml'
+        config.write_text('[mcp_servers.x]\nurl = "https://x"\nbearer_token_env_var = "X_TOKEN"\n')
+        harness('install', '--home', str(self.home))
+        result = run('check', '--home', str(self.home))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'))
+
+    def test_codex_engram_mcp_receives_the_token_from_the_environment(self):
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir(parents=True)
+        config.write_text('[mcp_servers.engram]\ncommand = "engram"\n\n[mcp_servers.engram.env]\n'
+                          'ENGRAM_CLOUD_AUTOSYNC = "1"\n')
+        harness('install', '--home', str(self.home))
+        data = tomllib.loads(config.read_text())
+        self.assertEqual(data['mcp_servers']['engram']['env_vars'], ['ENGRAM_CLOUD_TOKEN'])
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_engram_token_leaves_codex_config(self):
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir(parents=True)
+        config.write_text('[mcp_servers.engram.env]\nENGRAM_CLOUD_AUTOSYNC = "1"\n'
+                          'ENGRAM_CLOUD_TOKEN = "s3cr3t"\n\n[agents]\nenabled = true\n')
+        harness('install', '--home', str(self.home))
+        self.assertEqual(config.read_text(),
+                         '[mcp_servers.engram.env]\nENGRAM_CLOUD_AUTOSYNC = "1"\n\n[agents]\nenabled = true\n')
 
 
 class Plugins(unittest.TestCase):

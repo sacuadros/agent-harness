@@ -21,6 +21,7 @@ SKILLS = REPO / 'core' / 'skills'
 SUBAGENTS = REPO / 'core' / 'agents'
 HOOKS = REPO / 'core' / 'hooks'
 PLUGINS = tomllib.loads((REPO / 'core' / 'plugins.toml').read_text())
+PERMISSIONS = tomllib.loads((REPO / 'core' / 'permissions.toml').read_text())
 # Hook scripts each agent's hook config runs (Codex also calls the Claude copies).
 HOOK_SCRIPTS = {
     '.claude/hooks': ('harness_guards.py', 'enforce_memory_graph.py', 'engram_auto_enroll.py'),
@@ -160,6 +161,10 @@ def hook_config(agent, home):
     data['hooks'] = merge_hooks(data.get('hooks', {}), json.loads(template))
     if agent == 'claude':
         data.setdefault('enabledPlugins', {}).update(PLUGINS['claude'])
+        permissions = data.setdefault('permissions', {})
+        for kind in ('deny', 'ask'):
+            rules = permissions.setdefault(kind, [])
+            rules += [rule for rule in PERMISSIONS['claude'][kind] if rule not in rules]
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
@@ -173,6 +178,13 @@ def codex_config(home):
         table = re.escape(f'[plugins."{plugin}"]')
         text = re.sub(rf'(^{table}\n(?:(?!\[).*\n)*?)enabled = (?:true|false)\n',
                       rf'\g<1>enabled = {str(enabled).lower()}\n', text, count=1, flags=re.M)
+    for key in PERMISSIONS['codex']['remove_env']:  # secrets come from the environment instead
+        text = re.sub(rf'^{re.escape(key)}\s*=.*\n', '', text, flags=re.M)
+    for server, names in PERMISSIONS['codex']['pass_env'].items():
+        header = f'[mcp_servers.{server}]\n'
+        if header in text and not re.search(rf'^{re.escape(header)}(?:(?!\[).*\n)*?env_vars\s*=', text, re.M):
+            # Codex starts stdio MCP servers with a minimal environment; let these through by name.
+            text = text.replace(header, header + f'env_vars = {json.dumps(names)}\n', 1)
     tomllib.loads(text)  # never write a config Codex could not read
     return text.encode()
 
@@ -249,6 +261,20 @@ def install(home, dry_run=False):
         print('no changes')
 
 
+SECRET_NAME = re.compile(r'token|secret|password|api_?key', re.I)
+NOT_SECRET = re.compile(r'tokens$|_env_var$', re.I)  # token counts, names of env vars
+
+
+def literal_secrets(data, prefix=''):
+    """Dotted names of secret-looking keys holding a literal value (the value is never returned)."""
+    for key, value in data.items():
+        name = f'{prefix}{key}'
+        if isinstance(value, dict):
+            yield from literal_secrets(value, name + '.')
+        elif isinstance(value, str) and value and SECRET_NAME.search(key) and not NOT_SECRET.search(key):
+            yield name
+
+
 def check(home):
     problems = []
     for rel, content in outputs(home).items():
@@ -266,9 +292,12 @@ def check(home):
         path = home / rel
         if path.is_file():
             try:
-                parse(path.read_text())
+                data = parse(path.read_text())
             except ValueError as error:  # JSONDecodeError and TOMLDecodeError are ValueErrors
                 problems.append(f'invalid: {path}: {error}')
+                continue
+            scope = {'env': data.get('env', {})} if rel.endswith('settings.json') else data
+            problems += [f'secret: {path}: {key}' for key in literal_secrets(scope)]
     for problem in problems:
         print(problem)
     print('ok' if not problems else f'{len(problems)} problem(s); run `harness install` to fix drift')

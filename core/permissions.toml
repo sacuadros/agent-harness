@@ -1,0 +1,18 @@
+# Credential protection. Read/Edit rules are merged into ~/.claude/settings.json `permissions`
+# (your own entries stay); Bash access to the same files is denied by core/hooks/harness_guards.py.
+[claude]
+deny = [
+  "Read(~/.ssh/id_rsa)", "Read(~/.ssh/id_ed25519)", "Read(~/.ssh/id_ecdsa)", "Read(~/.ssh/id_dsa)",
+  "Read(~/.ssh/*.pem)", "Read(~/.ssh/*_key)",
+  "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.netrc)", "Read(~/.docker/config.json)",
+  "Read(~/.kube/config)", "Read(~/.config/gh/hosts.yml)", "Read(~/.codex/auth.json)",
+  "Read(~/.pi/agent/auth.json)",
+  "Edit(~/.ssh/**)", "Edit(~/.aws/**)", "Edit(~/.gnupg/**)", "Edit(~/.netrc)",
+]
+ask = ["Read(**/.env)", "Read(**/.env.*)"]
+
+[codex]
+# Secrets that must come from the environment (Keychain via a LaunchAgent), never from config.toml.
+remove_env = ["ENGRAM_CLOUD_TOKEN"]
+# Codex gives stdio MCP servers a minimal environment; these variables are passed through by name.
+pass_env = { engram = ["ENGRAM_CLOUD_TOKEN"] }
