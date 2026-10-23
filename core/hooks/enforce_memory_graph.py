@@ -201,8 +201,15 @@ def selftest():
                  ('Bash', {'command': 'cd repo && codegraph query x'})):
         path = transcript(('prompt', 'x'), used)
         assert pretool_decision({'tool_name': 'Grep', 'cwd': repo, 'transcript_path': path}) is None
-    # Codex rollouts: event_msg/item_completed items, optionally zstd-compressed.
+    # Codex rollouts: event_msg/item_completed items, optionally zstd-compressed (Python 3.14+).
+    try:
+        from compression import zstd as _zstd  # noqa: F401
+        has_zstd = True
+    except ImportError:
+        has_zstd = False
+
     def codex_transcript(*items, zst=False):
+        zst = zst and has_zstd
         f = tempfile.NamedTemporaryFile('wb', suffix='.jsonl.zst' if zst else '.jsonl', delete=False)
         f.close()
         lines = ''.join(json.dumps({'type': 'event_msg', 'payload': {
@@ -241,7 +248,7 @@ def selftest():
     os.environ['HOME'] = str(home)
     assert pretool_decision({'tool_name': 'Grep', 'cwd': str(home / 'scratch'),
                              'transcript_path': fresh}) is None
-    print('enforce_memory_graph selftest: ok')
+    print('enforce_memory_graph selftest: ok' + ('' if has_zstd else ' (skipped zstd cases: needs Python 3.14+)'))
 
 
 def main():

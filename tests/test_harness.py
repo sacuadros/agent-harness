@@ -380,6 +380,50 @@ class Copilot(unittest.TestCase):
         self.assertFalse((self.home / '.copilot').exists())
 
 
+class NewPC(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def test_clean_install_with_every_agent_passes_check(self):
+        for folder in ('.config/opencode', '.pi/agent', '.copilot', 'Library/Application Support/Code/User/prompts'):
+            (self.home / folder).mkdir(parents=True)
+        harness('install', '--home', str(self.home))
+        result = run('check', '--home', str(self.home))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'), result.stdout)
+
+    def test_hook_selftest_without_zstd_skips_those_cases(self):
+        script = REPO / 'core' / 'hooks' / 'enforce_memory_graph.py'
+        hide = ("import runpy, sys; sys.modules['compression.zstd'] = None; "
+                f"sys.argv = ['x', 'selftest']; runpy.run_path({str(script)!r}, run_name='__main__')")
+        result = subprocess.run([sys.executable, '-c', hide], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('skipped zstd cases', result.stdout)
+
+    def test_linux_vscode_profile_gets_the_prompt_file(self):
+        (self.home / '.copilot').mkdir()
+        prompts = self.home / '.config' / 'Code' / 'User' / 'prompts'
+        prompts.mkdir(parents=True)
+        harness('install', '--home', str(self.home))
+        self.assertTrue((prompts / 'agent-harness.instructions.md').is_file())
+
+    def test_readme_commands_and_paths_exist(self):
+        readme = (REPO / 'README.md').read_text()
+        usage = subprocess.run([sys.executable, str(HARNESS), '--help'], capture_output=True, text=True).stdout
+        for command in set(re.findall(r'bin/harness (\w+)', readme)):
+            self.assertIn(command, usage, command)
+        for path in set(re.findall(r'`(core/[\w./-]+?)/?`', readme)):
+            if '<' not in path and 'NN-' not in path:
+                self.assertTrue((REPO / path).exists(), path)
+        self.assertTrue((REPO / 'LICENSE').read_text().startswith('MIT License'))
+
+    def test_old_python_gets_a_clear_message(self):
+        fake = ("import runpy, sys; sys.version_info = (3, 10, 0); "
+                f"sys.argv = ['harness', 'check']; runpy.run_path({str(HARNESS)!r}, run_name='__main__')")
+        result = subprocess.run([sys.executable, '-c', fake], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('needs Python 3.11 or newer', result.stderr)
+
+
 class Doctor(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())

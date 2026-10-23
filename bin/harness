@@ -6,13 +6,18 @@
   harness check [--home]              exit 1 if anything installed drifted or is broken
   harness doctor [--home]             report leftovers and version drift (read-only)
 """
+import sys
+
+if sys.version_info < (3, 11):  # before importing tomllib, which arrived in 3.11
+    sys.exit('agent-harness needs Python 3.11 or newer; set `python` in ~/.agent-harness/config.toml '
+             'for the hooks and run bin/harness with that interpreter.')
+
 import argparse
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 import tomllib
 from pathlib import Path
@@ -253,7 +258,14 @@ def opencode_config(home):
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
-VSCODE_PROMPTS = 'Library/Application Support/Code/User/prompts'
+# VS Code's user profile on macOS and on Linux.
+VSCODE_USER = ('Library/Application Support/Code/User', '.config/Code/User')
+
+
+def vscode_user(home):
+    return next((rel for rel in VSCODE_USER if (home / rel).is_dir()), None)
+
+
 RULES = '.codex/rules/default.rules'
 RULES_BEGIN = '# >>> agent-harness: managed by bin/harness, edit core/hooks/codex.rules\n'
 RULES_END = '# <<< agent-harness\n'
@@ -295,9 +307,10 @@ def outputs(home):
         for script in scripts:
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     files[RULES] = codex_rules(home)
-    if present('copilot', home) and (home / VSCODE_PROMPTS).is_dir():  # VS Code's editor-only chat
+    user = vscode_user(home)
+    if present('copilot', home) and user and (home / user / 'prompts').is_dir():  # VS Code's editor-only chat
         header = "---\napplyTo: '**'\ndescription: agent-harness rules (edit the agent-harness repo)\n---\n\n"
-        files[f'{VSCODE_PROMPTS}/agent-harness.instructions.md'] = (header + render('copilot')).encode()
+        files[f'{user}/prompts/agent-harness.instructions.md'] = (header + render('copilot')).encode()
     if (home / PI_SETTINGS).is_file():
         try:
             files[PI_SETTINGS] = pi_settings(home)
@@ -460,7 +473,7 @@ def doctor(home):
         known = installed_skill_names(home)
         findings += [f'orphan skill override: {name} (remove it from skillOverrides in {settings})'
                      for name in overrides if name not in known]
-    vscode = home / 'Library/Application Support/Code/User/settings.json'
+    vscode = home / (vscode_user(home) or VSCODE_USER[0]) / 'settings.json'
     if vscode.is_file():  # JSONC with comments: read the one setting with a regex, never rewrite it
         block = re.search(r'"github\.copilot\.chat\.instructions"\s*:\s*\[(.*?)\]', vscode.read_text(), re.S)
         for path in re.findall(r'~/[^\s",]+', block[1] if block else ''):
