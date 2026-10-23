@@ -15,7 +15,11 @@ from pathlib import Path
 
 ENGRAM_WRITES = ('mem_save', 'mem_update', 'mem_session_summary')
 EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}
-SUBSTANTIVE_TOOL_CALLS = 8  # ponytail: tool count as a proxy for "a finding happened"
+SUBSTANTIVE_TOOL_CALLS = 8
+# Tools that organize or recall work without producing anything worth remembering.
+BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite')
+MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
+CLI_WRITE = re.compile(r'(?:^|[;&|]\s*)engram\s+(?:save|update)\b')
 SEARCH_CMD = re.compile(r'^\s*(?:rg|grep|egrep|ag|find|fd|git\s+grep)\b')
 
 
@@ -87,8 +91,14 @@ def stop_decision(data):
         return None
     turn = last_turn_tools(data.get('transcript_path', ''))
     names = [t.get('name', '') for t in turn]
-    if any(n.endswith(ENGRAM_WRITES) for n in names):
+    if any(n.endswith(ENGRAM_WRITES) for n in names) or any(
+            CLI_WRITE.search(t.get('input', {}).get('command', '')) for t in turn if t.get('name') == 'Bash'):
         return None
+    names = [n for n in names if not n.startswith(BOOKKEEPING) and not n.endswith(MEMORY_READS)]
+    waiting = any(t.get('name') == 'Agent' or (t.get('name') == 'Bash' and t.get('input', {}).get(
+        'run_in_background')) for t in turn)
+    if waiting and not (EDIT_TOOLS & set(names)):
+        return None  # results arrive in a later turn; that turn decides what to remember
     if not (EDIT_TOOLS & set(names)) and len(names) < SUBSTANTIVE_TOOL_CALLS:
         return None
     return {'decision': 'block', 'reason': (
@@ -158,6 +168,21 @@ def selftest():
     assert stop_decision({'transcript_path': old_edit}) is None
     many = transcript(('prompt', 'x'), *[('Bash', {'command': 'ls'})] * SUBSTANTIVE_TOOL_CALLS)
     assert stop_decision({'transcript_path': many})['decision'] == 'block'
+    bookkeeping = transcript(('prompt', 'x'), *[('mcp__ccd_turn__update_plan', {}), ('ToolSearch', {}),
+                                                 ('mcp__plugin_engram_engram__mem_judge', {}),
+                                                 ('Skill', {}), ('mcp__ccd_turn__wrap_up', {})] * 2)
+    assert stop_decision({'transcript_path': bookkeeping}) is None
+    reads = [('Read', {})] * SUBSTANTIVE_TOOL_CALLS
+    for launch in (('Agent', {'prompt': 'research'}), ('Bash', {'command': 'pytest', 'run_in_background': True})):
+        waiting = transcript(('prompt', 'x'), launch, *reads)
+        assert stop_decision({'transcript_path': waiting}) is None, launch
+    edited_while_waiting = transcript(('prompt', 'x'), ('Agent', {}), ('Edit', {}))
+    assert stop_decision({'transcript_path': edited_while_waiting})['decision'] == 'block'
+    cli_save = transcript(('prompt', 'x'), ('Edit', {}), *[('Bash', {'command': 'ls'})] * SUBSTANTIVE_TOOL_CALLS,
+                          ('Bash', {'command': 'cd repo && engram save "t" "c" --project p'}))
+    assert stop_decision({'transcript_path': cli_save}) is None
+    cli_read = transcript(('prompt', 'x'), ('Edit', {}), ('Bash', {'command': 'engram search harness'}))
+    assert stop_decision({'transcript_path': cli_read})['decision'] == 'block'
 
     repo = tempfile.mkdtemp()
     (Path(repo) / '.git').mkdir()

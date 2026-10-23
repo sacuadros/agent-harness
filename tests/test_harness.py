@@ -219,6 +219,12 @@ class Hooks(unittest.TestCase):
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
         self.assertTrue(rules.read_text().endswith(added))
 
+    def test_repo_hook_selftests_pass(self):
+        for script in ('harness_guards.py', 'enforce_memory_graph.py'):
+            result = subprocess.run([sys.executable, str(REPO / 'core' / 'hooks' / script), 'selftest'],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, f'{script}: {result.stdout}{result.stderr}')
+
     def test_failing_selftest_fails_check(self):
         self.install()
         broken = self.home / '.claude' / 'hooks' / 'harness_guards.py'
