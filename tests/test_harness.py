@@ -27,21 +27,21 @@ def tree(root):
 
 def harness(*args):
     return subprocess.run([sys.executable, str(HARNESS), *args],
-                          capture_output=True, text=True, check=True).stdout
+                          capture_output=True, encoding='utf-8', check=True).stdout
 
 
 def run(*args):
-    return subprocess.run([sys.executable, str(HARNESS), *args], capture_output=True, text=True)
+    return subprocess.run([sys.executable, str(HARNESS), *args], capture_output=True, encoding='utf-8')
 
 
 class Render(unittest.TestCase):
     @unittest.skipUnless((HOME / '.claude' / 'CLAUDE.md').is_file(), 'no installed CLAUDE.md')
     def test_claude_matches_installed(self):
-        self.assertEqual(harness('render', 'claude'), (HOME / '.claude' / 'CLAUDE.md').read_text())
+        self.assertEqual(harness('render', 'claude'), (HOME / '.claude' / 'CLAUDE.md').read_text(encoding='utf-8'))
 
     @unittest.skipUnless((HOME / '.codex' / 'AGENTS.md').is_file(), 'no installed AGENTS.md')
     def test_codex_matches_installed(self):
-        self.assertEqual(harness('render', 'codex'), (HOME / '.codex' / 'AGENTS.md').read_text())
+        self.assertEqual(harness('render', 'codex'), (HOME / '.codex' / 'AGENTS.md').read_text(encoding='utf-8'))
 
 
 class Install(unittest.TestCase):
@@ -50,8 +50,8 @@ class Install(unittest.TestCase):
 
     def test_creates_files_in_empty_home(self):
         harness('install', '--home', str(self.home))
-        self.assertEqual((self.home / '.claude' / 'CLAUDE.md').read_text(), harness('render', 'claude'))
-        self.assertEqual((self.home / '.codex' / 'AGENTS.md').read_text(), harness('render', 'codex'))
+        self.assertEqual((self.home / '.claude' / 'CLAUDE.md').read_text(encoding='utf-8'), harness('render', 'claude'))
+        self.assertEqual((self.home / '.codex' / 'AGENTS.md').read_text(encoding='utf-8'), harness('render', 'codex'))
 
     def test_second_install_changes_nothing(self):
         harness('install', '--home', str(self.home))
@@ -62,11 +62,11 @@ class Install(unittest.TestCase):
     def test_backs_up_a_changed_file_before_overwriting(self):
         harness('install', '--home', str(self.home))
         installed = self.home / '.claude' / 'CLAUDE.md'
-        installed.write_text('hand edit\n')
+        installed.write_text('hand edit\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
         backups = list((self.home / '.agent-harness' / 'backups').glob('*/.claude/CLAUDE.md'))
-        self.assertEqual([b.read_text() for b in backups], ['hand edit\n'])
-        self.assertEqual(installed.read_text(), harness('render', 'claude'))
+        self.assertEqual([b.read_text(encoding='utf-8') for b in backups], ['hand edit\n'])
+        self.assertEqual(installed.read_text(encoding='utf-8'), harness('render', 'claude'))
 
     @unittest.skipUnless((HOME / '.claude' / 'CLAUDE.md').is_file(), 'no installed harness')
     def test_dry_run_on_this_pc_reports_no_changes(self):
@@ -97,14 +97,14 @@ class Skills(unittest.TestCase):
         codex = self.home / '.codex' / 'skills' / 'secure-development'
         self.assertFalse((claude / 'agents' / 'openai.yaml').exists())
         self.assertTrue((codex / 'agents' / 'openai.yaml').is_file())
-        self.assertIn('/security-review', (claude / 'SKILL.md').read_text())
-        self.assertIn('codex-security', (codex / 'SKILL.md').read_text())
+        self.assertIn('/security-review', (claude / 'SKILL.md').read_text(encoding='utf-8'))
+        self.assertIn('codex-security', (codex / 'SKILL.md').read_text(encoding='utf-8'))
         leftovers = [f for f in self.home.rglob('*') if '.claude.' in f.name or '.codex.' in f.name]
         self.assertEqual(leftovers, [])
 
     def test_hand_edited_skill_fails_check(self):
         edited = self.home / '.codex' / 'skills' / 'pair' / 'SKILL.md'
-        edited.write_text('hand edit\n')
+        edited.write_text('hand edit\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(edited), result.stdout)
@@ -112,9 +112,9 @@ class Skills(unittest.TestCase):
     def test_unmanaged_skill_survives_install(self):
         mine = self.home / '.claude' / 'skills' / 'hyperframes' / 'SKILL.md'
         mine.parent.mkdir(parents=True)
-        mine.write_text('third party\n')
+        mine.write_text('third party\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        self.assertEqual(mine.read_text(), 'third party\n')
+        self.assertEqual(mine.read_text(encoding='utf-8'), 'third party\n')
 
 
 class Subagents(unittest.TestCase):
@@ -132,10 +132,10 @@ class Subagents(unittest.TestCase):
                 installed = HOME / rel
                 if not installed.is_file():
                     continue
-                expected = installed.read_text()
+                expected = installed.read_text(encoding='utf-8')
                 for old, new in self.FIXES.items():
                     expected = expected.replace(old, new)
-                self.assertEqual((self.home / rel).read_text(), expected, rel)
+                self.assertEqual((self.home / rel).read_text(encoding='utf-8'), expected, rel)
 
 
 class Hooks(unittest.TestCase):
@@ -158,7 +158,7 @@ class Hooks(unittest.TestCase):
     def write_json(self, rel, data):
         path = self.home / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data))
+        path.write_text(json.dumps(data), encoding='utf-8', newline='\n')
         return path
 
     def commands(self, entries):
@@ -166,7 +166,7 @@ class Hooks(unittest.TestCase):
 
     def test_settings_merge_keeps_foreign_parts(self):
         (self.home / '.agent-harness').mkdir()
-        (self.home / '.agent-harness' / 'config.toml').write_text('python = "/usr/bin/python3"\n')
+        (self.home / '.agent-harness' / 'config.toml').write_text('python = "/usr/bin/python3"\n', encoding='utf-8', newline='\n')
         foreign = {'hooks': [{'type': 'command', 'command': 'codegraph prompt-hook'}]}
         settings = self.write_json('.claude/settings.json', {
             'env': {'X': '1'},
@@ -176,10 +176,10 @@ class Hooks(unittest.TestCase):
                                      'command': 'python3 /old/.claude/hooks/enforce_memory_graph.py stop'}]}],
             }})
         self.install()
-        data = json.loads(settings.read_text())
+        data = json.loads(settings.read_text(encoding='utf-8'))
         self.assertEqual(data['env'], {'X': '1'})
         self.assertEqual(data['hooks']['UserPromptSubmit'], [foreign])
-        hooks = str(self.home / '.claude' / 'hooks')
+        hooks = (self.home / '.claude' / 'hooks').as_posix()
         self.assertEqual(self.commands(data['hooks']['Stop']), [
             f'/usr/bin/python3 {hooks}/enforce_memory_graph.py stop',
             f'/usr/bin/python3 {hooks}/engram_auto_enroll.py'])
@@ -196,7 +196,7 @@ class Hooks(unittest.TestCase):
                      old('python3 /x/.claude/hooks/enforce_memory_graph.py stop')],
         }})
         self.install()
-        hooks = json.loads(hooks_json.read_text())['hooks']
+        hooks = json.loads(hooks_json.read_text(encoding='utf-8'))['hooks']
         self.assertEqual(hooks['PostToolUse'], [foreign])
         stop = hooks['Stop']
         self.assertEqual(len(stop), 3)
@@ -206,32 +206,32 @@ class Hooks(unittest.TestCase):
         self.assertEqual(len(hooks['PreToolUse']), 3)
 
     def test_rules_block_keeps_codex_added_rules(self):
-        block = (REPO / 'core' / 'hooks' / 'codex.rules').read_text()
+        block = (REPO / 'core' / 'hooks' / 'codex.rules').read_text(encoding='utf-8')
         rules = self.home / '.codex' / 'rules' / 'default.rules'
         rules.parent.mkdir(parents=True)
         mine = 'prefix_rule(pattern=["npm", "run", "build"], decision="allow")\n'
         old_copy = next(line for line in block.splitlines() if line.startswith('prefix_rule'))
-        rules.write_text(mine + old_copy + '\n')
+        rules.write_text(mine + old_copy + '\n', encoding='utf-8', newline='\n')
         self.install()
-        text = rules.read_text()
+        text = rules.read_text(encoding='utf-8')
         self.assertTrue(text.startswith(mine))
         self.assertEqual(text.count(old_copy), 1)
         self.assertEqual(text.count('# >>> agent-harness'), 1)
         added = 'prefix_rule(pattern=["make"], decision="allow")\n'
-        rules.write_text(text + added)
+        rules.write_text(text + added, encoding='utf-8', newline='\n')
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
-        self.assertTrue(rules.read_text().endswith(added))
+        self.assertTrue(rules.read_text(encoding='utf-8').endswith(added))
 
     def test_repo_hook_selftests_pass(self):
         for script in ('harness_guards.py', 'enforce_memory_graph.py'):
             result = subprocess.run([sys.executable, str(REPO / 'core' / 'hooks' / script), 'selftest'],
-                                    capture_output=True, text=True)
+                                    capture_output=True, encoding='utf-8')
             self.assertEqual(result.returncode, 0, f'{script}: {result.stdout}{result.stderr}')
 
     def test_failing_selftest_fails_check(self):
         self.install()
         broken = self.home / '.claude' / 'hooks' / 'harness_guards.py'
-        broken.write_text('import sys\nsys.exit(1)\n')
+        broken.write_text('import sys\nsys.exit(1)\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'selftest failed: {broken}', result.stdout)
@@ -253,16 +253,16 @@ class OpenCode(unittest.TestCase):
         config = self.home / '.config' / 'opencode' / 'opencode.json'
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({'model': 'x/y', 'agent': {'orchestrator': {
-            'permission': {'task': {'*': 'deny', 'explore': 'allow'}}}}}))
+            'permission': {'task': {'*': 'deny', 'explore': 'allow'}}}}}), encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
         agents = self.home / '.config' / 'opencode' / 'agents'
-        reviewer = (agents / 'independent-reviewer.md').read_text()
+        reviewer = (agents / 'independent-reviewer.md').read_text(encoding='utf-8')
         self.assertTrue(reviewer.startswith('---\ndescription: '))
         self.assertIn('mode: subagent\n', reviewer)
         self.assertIn('  edit: deny\n', reviewer)
-        self.assertIn('the primary agent', (agents / 'test-runner.md').read_text())
-        self.assertNotIn('  edit: deny\n', (agents / 'implementation-worker.md').read_text())
-        data = json.loads(config.read_text())
+        self.assertIn('the primary agent', (agents / 'test-runner.md').read_text(encoding='utf-8'))
+        self.assertNotIn('  edit: deny\n', (agents / 'implementation-worker.md').read_text(encoding='utf-8'))
+        data = json.loads(config.read_text(encoding='utf-8'))
         self.assertEqual(data['model'], 'x/y')
         task = data['agent']['orchestrator']['permission']['task']
         self.assertEqual(task['explore'], 'allow')
@@ -274,10 +274,10 @@ class OpenCode(unittest.TestCase):
         (self.home / '.config' / 'opencode').mkdir(parents=True)
         harness('install', '--home', str(self.home))
         plugin = self.home / '.config' / 'opencode' / 'plugins' / 'agent-harness.ts'
-        text = plugin.read_text()
-        self.assertIn(f'"{self.home}/.claude/hooks"', text)
+        text = plugin.read_text(encoding='utf-8')
+        self.assertIn(f'"{self.home.as_posix()}/.claude/hooks"', text)
         self.assertNotIn('{python}', text)
-        plugin.write_text(text + '// hand edit\n')
+        plugin.write_text(text + '// hand edit\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'drift: {plugin}', result.stdout)
@@ -285,13 +285,13 @@ class OpenCode(unittest.TestCase):
     def test_stale_skill_copies_are_retired_to_a_backup(self):
         stale = self.home / '.agents' / 'skills' / 'chained-pr' / 'SKILL.md'
         stale.parent.mkdir(parents=True)
-        stale.write_text('old\n')
+        stale.write_text('old\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
         self.assertFalse(stale.parent.exists())
         moved = list((self.home / '.agent-harness' / 'backups').glob('*/.agents/skills/chained-pr/SKILL.md'))
-        self.assertEqual([m.read_text() for m in moved], ['old\n'])
+        self.assertEqual([m.read_text(encoding='utf-8') for m in moved], ['old\n'])
         stale.parent.mkdir(parents=True)
-        stale.write_text('back again\n')
+        stale.write_text('back again\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertIn(f'stale: {stale.parent}', result.stdout)
 
@@ -314,17 +314,17 @@ class Pi(unittest.TestCase):
     def test_settings_subagents_and_append_system(self):
         agent_dir = self.home / '.pi' / 'agent'
         agent_dir.mkdir(parents=True)
-        (agent_dir / 'settings.json').write_text(json.dumps({'defaultModel': 'm', 'packages': ['npm:x']}))
-        (agent_dir / 'APPEND_SYSTEM.md').write_text('old codegraph block\n')
+        (agent_dir / 'settings.json').write_text(json.dumps({'defaultModel': 'm', 'packages': ['npm:x']}), encoding='utf-8', newline='\n')
+        (agent_dir / 'APPEND_SYSTEM.md').write_text('old codegraph block\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        settings = json.loads((agent_dir / 'settings.json').read_text())
+        settings = json.loads((agent_dir / 'settings.json').read_text(encoding='utf-8'))
         self.assertEqual(settings['defaultModel'], 'm')
         self.assertEqual(settings['packages'], ['npm:x'])
         self.assertEqual(settings['skills'], ['~/.claude/skills'])
-        reviewer = (agent_dir / 'agents' / 'independent-reviewer.md').read_text()
+        reviewer = (agent_dir / 'agents' / 'independent-reviewer.md').read_text(encoding='utf-8')
         self.assertTrue(reviewer.startswith('---\nname: independent-reviewer\n'))
         self.assertIn('tools: read, grep, find, ls, bash\n', reviewer)
-        self.assertIn('edit, write', (agent_dir / 'agents' / 'implementation-worker.md').read_text())
+        self.assertIn('edit, write', (agent_dir / 'agents' / 'implementation-worker.md').read_text(encoding='utf-8'))
         self.assertFalse((agent_dir / 'APPEND_SYSTEM.md').exists())
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
@@ -332,10 +332,10 @@ class Pi(unittest.TestCase):
         (self.home / '.pi' / 'agent').mkdir(parents=True)
         harness('install', '--home', str(self.home))
         extension = self.home / '.pi' / 'agent' / 'extensions' / 'agent-harness.ts'
-        text = extension.read_text()
-        self.assertIn(f'"{self.home}/.claude/hooks"', text)
+        text = extension.read_text(encoding='utf-8')
+        self.assertIn(f'"{self.home.as_posix()}/.claude/hooks"', text)
         self.assertIn('ctx.ui.confirm', text)
-        extension.write_text(text + '// hand edit\n')
+        extension.write_text(text + '// hand edit\n', encoding='utf-8', newline='\n')
         self.assertIn(f'drift: {extension}', run('check', '--home', str(self.home)).stdout)
 
     def test_nothing_for_pi_when_it_is_not_installed(self):
@@ -359,20 +359,20 @@ class Copilot(unittest.TestCase):
         (self.home / '.copilot').mkdir()
         prompts = self.home / self.PROMPTS
         prompts.mkdir(parents=True)
-        (prompts / 'gentle-ai.instructions.md').write_text('old\n')
-        (prompts / 'sonar-fix.prompt.md').write_text('mine\n')
+        (prompts / 'gentle-ai.instructions.md').write_text('old\n', encoding='utf-8', newline='\n')
+        (prompts / 'sonar-fix.prompt.md').write_text('mine\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        self.assertEqual((self.home / '.copilot' / 'copilot-instructions.md').read_text(),
+        self.assertEqual((self.home / '.copilot' / 'copilot-instructions.md').read_text(encoding='utf-8'),
                          harness('render', 'copilot'))
-        local = (prompts / 'agent-harness.instructions.md').read_text()
+        local = (prompts / 'agent-harness.instructions.md').read_text(encoding='utf-8')
         self.assertTrue(local.startswith("---\napplyTo: '**'\n"))
         self.assertFalse((prompts / 'gentle-ai.instructions.md').exists())
         self.assertTrue((prompts / 'sonar-fix.prompt.md').exists())
-        agent = (self.home / '.copilot' / 'agents' / 'test-runner.agent.md').read_text()
+        agent = (self.home / '.copilot' / 'agents' / 'test-runner.agent.md').read_text(encoding='utf-8')
         self.assertTrue(agent.startswith('---\nname: test-runner\ndescription: '))
-        hooks = json.loads((self.home / '.copilot' / 'hooks' / 'agent-harness.json').read_text())
+        hooks = json.loads((self.home / '.copilot' / 'hooks' / 'agent-harness.json').read_text(encoding='utf-8'))
         commands = [h['bash'] for h in hooks['hooks']['PreToolUse']]
-        self.assertIn(f'{self.home}/.claude/hooks/harness_guards.py bash --copilot', ' '.join(commands))
+        self.assertIn(f'{self.home.as_posix()}/.claude/hooks/harness_guards.py bash --copilot', ' '.join(commands))
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
     def test_nothing_for_copilot_when_it_is_not_installed(self):
@@ -395,7 +395,7 @@ class NewPC(unittest.TestCase):
         script = REPO / 'core' / 'hooks' / 'enforce_memory_graph.py'
         hide = ("import runpy, sys; sys.modules['compression.zstd'] = None; "
                 f"sys.argv = ['x', 'selftest']; runpy.run_path({str(script)!r}, run_name='__main__')")
-        result = subprocess.run([sys.executable, '-c', hide], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, '-c', hide], capture_output=True, encoding='utf-8')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('skipped zstd cases', result.stdout)
 
@@ -407,19 +407,19 @@ class NewPC(unittest.TestCase):
         self.assertTrue((prompts / 'agent-harness.instructions.md').is_file())
 
     def test_readme_commands_and_paths_exist(self):
-        readme = (REPO / 'README.md').read_text()
-        usage = subprocess.run([sys.executable, str(HARNESS), '--help'], capture_output=True, text=True).stdout
+        readme = (REPO / 'README.md').read_text(encoding='utf-8')
+        usage = subprocess.run([sys.executable, str(HARNESS), '--help'], capture_output=True, encoding='utf-8').stdout
         for command in set(re.findall(r'bin/harness (\w+)', readme)):
             self.assertIn(command, usage, command)
         for path in set(re.findall(r'`(core/[\w./-]+?)/?`', readme)):
             if '<' not in path and 'NN-' not in path:
                 self.assertTrue((REPO / path).exists(), path)
-        self.assertTrue((REPO / 'LICENSE').read_text().startswith('MIT License'))
+        self.assertTrue((REPO / 'LICENSE').read_text(encoding='utf-8').startswith('MIT License'))
 
     def test_old_python_gets_a_clear_message(self):
         fake = ("import runpy, sys; sys.version_info = (3, 10, 0); "
                 f"sys.argv = ['harness', 'check']; runpy.run_path({str(HARNESS)!r}, run_name='__main__')")
-        result = subprocess.run([sys.executable, '-c', fake], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, '-c', fake], capture_output=True, encoding='utf-8')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('needs Python 3.11 or newer', result.stderr)
 
@@ -465,7 +465,7 @@ class Doctor(unittest.TestCase):
 
     def doctor(self, **env):
         result = subprocess.run([sys.executable, str(HARNESS), 'doctor', '--home', str(self.home)],
-                                capture_output=True, text=True, env={**self.env, **env})
+                                capture_output=True, encoding='utf-8', env={**self.env, **env})
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -473,9 +473,9 @@ class Doctor(unittest.TestCase):
         (self.home / '.claude' / 'skills' / 'present').mkdir(parents=True)
         command = self.home / '.claude/plugins/cache/market/tool/1.0/commands/tool-review.md'
         command.parent.mkdir(parents=True)
-        command.write_text('# review\n')
+        command.write_text('# review\n', encoding='utf-8', newline='\n')
         (self.home / '.claude' / 'settings.json').write_text(json.dumps({'skillOverrides': {
-            'present': 'off', 'ghost': 'off', 'init': 'user-invocable-only', 'tool:tool-review': 'off'}}))
+            'present': 'off', 'ghost': 'off', 'init': 'user-invocable-only', 'tool:tool-review': 'off'}}), encoding='utf-8', newline='\n')
         out = self.doctor()
         self.assertIn('orphan skill override: ghost', out)
         self.assertNotIn('present', out)
@@ -491,13 +491,13 @@ class Doctor(unittest.TestCase):
         plugins = self.home / '.claude' / 'plugins'
         (plugins / 'marketplaces' / 'engram' / '.claude-plugin').mkdir(parents=True)
         (plugins / 'installed_plugins.json').write_text(json.dumps(
-            {'plugins': {'engram@engram': [{'version': '0.1.0'}]}}))
+            {'plugins': {'engram@engram': [{'version': '0.1.0'}]}}), encoding='utf-8', newline='\n')
         (plugins / 'marketplaces' / 'engram' / '.claude-plugin' / 'marketplace.json').write_text(json.dumps(
-            {'plugins': [{'name': 'engram', 'version': '0.1.16'}]}))
+            {'plugins': [{'name': 'engram', 'version': '0.1.16'}]}), encoding='utf-8', newline='\n')
         (self.home / '.codex' / 'plugins' / 'cache' / 'engram' / 'engram' / '0.1.5').mkdir(parents=True)
         manifest = self.home / '.codex/.tmp/marketplaces/engram/plugin/codex/.codex-plugin/plugin.json'
         manifest.parent.mkdir(parents=True)
-        manifest.write_text(json.dumps({'version': '0.1.5'}))
+        manifest.write_text(json.dumps({'version': '0.1.5'}), encoding='utf-8', newline='\n')
         out = self.doctor()
         self.assertIn('engram claude plugin outdated: 0.1.0 -> 0.1.16', out)
         self.assertNotIn('codex plugin outdated', out)
@@ -507,7 +507,7 @@ class Doctor(unittest.TestCase):
         settings = self.home / 'Library/Application Support/Code/User/settings.json'
         settings.parent.mkdir(parents=True)
         settings.write_text('{\n  // comment\n  "github.copilot.chat.instructions": [\n'
-                            '    "Lee y sigue las reglas definidas en ~/.config/copilot/instructions.md",\n  ],\n}\n')
+                            '    "Lee y sigue las reglas definidas en ~/.config/copilot/instructions.md",\n  ],\n}\n', encoding='utf-8', newline='\n')
         self.assertIn('github.copilot.chat.instructions points to a missing file: ~/.config/copilot/instructions.md',
                       self.doctor())
 
@@ -540,9 +540,9 @@ class Secrets(unittest.TestCase):
         settings = self.home / '.claude' / 'settings.json'
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({'permissions': {
-            'allow': ['Bash(npm run build)'], 'deny': ['Read(./secret.txt)']}}))
+            'allow': ['Bash(npm run build)'], 'deny': ['Read(./secret.txt)']}}), encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        permissions = json.loads(settings.read_text())['permissions']
+        permissions = json.loads(settings.read_text(encoding='utf-8'))['permissions']
         self.assertEqual(permissions['allow'], ['Bash(npm run build)'])
         self.assertEqual(permissions['deny'][0], 'Read(./secret.txt)')
         self.assertIn('Read(~/.aws/**)', permissions['deny'])
@@ -553,9 +553,9 @@ class Secrets(unittest.TestCase):
     def test_check_flags_literal_secrets_without_printing_them(self):
         harness('install', '--home', str(self.home))
         settings = self.home / '.claude' / 'settings.json'
-        data = json.loads(settings.read_text())
+        data = json.loads(settings.read_text(encoding='utf-8'))
         data['env'] = {'OPENAI_API_KEY': 'sk-very-secret', 'PATH': '/bin'}
-        settings.write_text(json.dumps(data, indent=2) + '\n')
+        settings.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'secret: {settings}: env.OPENAI_API_KEY', result.stdout)
@@ -564,11 +564,11 @@ class Secrets(unittest.TestCase):
     def test_check_ignores_token_counts_and_env_var_names(self):
         harness('install', '--home', str(self.home))
         settings = self.home / '.claude' / 'settings.json'
-        data = json.loads(settings.read_text())
+        data = json.loads(settings.read_text(encoding='utf-8'))
         data['env'] = {'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '32000'}
-        settings.write_text(json.dumps(data, indent=2) + '\n')
+        settings.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8', newline='\n')
         config = self.home / '.codex' / 'config.toml'
-        config.write_text('[mcp_servers.x]\nurl = "https://x"\nbearer_token_env_var = "X_TOKEN"\n')
+        config.write_text('[mcp_servers.x]\nurl = "https://x"\nbearer_token_env_var = "X_TOKEN"\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
         result = run('check', '--home', str(self.home))
         self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'))
@@ -577,9 +577,9 @@ class Secrets(unittest.TestCase):
         config = self.home / '.codex' / 'config.toml'
         config.parent.mkdir(parents=True)
         config.write_text('[mcp_servers.engram]\ncommand = "engram"\n\n[mcp_servers.engram.env]\n'
-                          'ENGRAM_CLOUD_AUTOSYNC = "1"\n')
+                          'ENGRAM_CLOUD_AUTOSYNC = "1"\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        data = tomllib.loads(config.read_text())
+        data = tomllib.loads(config.read_text(encoding='utf-8'))
         self.assertEqual(data['mcp_servers']['engram']['env_vars'], ['ENGRAM_CLOUD_TOKEN'])
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
@@ -587,9 +587,9 @@ class Secrets(unittest.TestCase):
         config = self.home / '.codex' / 'config.toml'
         config.parent.mkdir(parents=True)
         config.write_text('[mcp_servers.engram.env]\nENGRAM_CLOUD_AUTOSYNC = "1"\n'
-                          'ENGRAM_CLOUD_TOKEN = "s3cr3t"\n\n[agents]\nenabled = true\n')
+                          'ENGRAM_CLOUD_TOKEN = "s3cr3t"\n\n[agents]\nenabled = true\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        self.assertEqual(config.read_text(),
+        self.assertEqual(config.read_text(encoding='utf-8'),
                          '[mcp_servers.engram.env]\nENGRAM_CLOUD_AUTOSYNC = "1"\n\n[agents]\nenabled = true\n')
 
 
@@ -601,23 +601,23 @@ class Plugins(unittest.TestCase):
         settings = self.home / '.claude' / 'settings.json'
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({'enabledPlugins': {
-            'superpowers@claude-plugins-official': True, 'engram@engram': True}}))
+            'superpowers@claude-plugins-official': True, 'engram@engram': True}}), encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        self.assertEqual(json.loads(settings.read_text())['enabledPlugins'], {
+        self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['enabledPlugins'], {
             'superpowers@claude-plugins-official': False, 'engram@engram': True})
 
     def test_systematic_debugging_is_a_harness_skill(self):
         harness('install', '--home', str(self.home))
         for agent_dir in ('.claude', '.codex'):
             self.assertTrue((self.home / agent_dir / 'skills' / 'systematic-debugging' / 'SKILL.md').is_file())
-        self.assertIn('core/skills/systematic-debugging', (REPO / 'NOTICE').read_text())
+        self.assertIn('core/skills/systematic-debugging', (REPO / 'NOTICE').read_text(encoding='utf-8'))
 
     def test_check_flags_reenabled_superpowers(self):
         harness('install', '--home', str(self.home))
         settings = self.home / '.claude' / 'settings.json'
-        data = json.loads(settings.read_text())
+        data = json.loads(settings.read_text(encoding='utf-8'))
         data['enabledPlugins']['superpowers@claude-plugins-official'] = True
-        settings.write_text(json.dumps(data, indent=2) + '\n')
+        settings.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'drift: {settings}', result.stdout)
@@ -631,17 +631,17 @@ class Plugins(unittest.TestCase):
         config.parent.mkdir(parents=True)
         before = ('model = "x"\n\n[plugins."superpowers@openai-curated"]\nenabled = true\n\n'
                   '[plugins."other@x"]\nenabled = true\n')
-        config.write_text(before)
+        config.write_text(before, encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        self.assertEqual(config.read_text(), before.replace('curated"]\nenabled = true', 'curated"]\nenabled = false'))
+        self.assertEqual(config.read_text(encoding='utf-8'), before.replace('curated"]\nenabled = true', 'curated"]\nenabled = false'))
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
     def test_codex_config_without_the_plugin_is_left_alone(self):
         config = self.home / '.codex' / 'config.toml'
         config.parent.mkdir(parents=True)
-        config.write_text('model = "x"\n')
+        config.write_text('model = "x"\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        self.assertEqual(config.read_text(), 'model = "x"\n')
+        self.assertEqual(config.read_text(encoding='utf-8'), 'model = "x"\n')
 
 
 class Check(unittest.TestCase):
@@ -659,7 +659,7 @@ class Check(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'))
 
     def test_hand_edited_file_fails(self):
-        (self.home / '.claude' / 'CLAUDE.md').write_text('hand edit\n')
+        (self.home / '.claude' / 'CLAUDE.md').write_text('hand edit\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.home / '.claude' / 'CLAUDE.md'), result.stdout)
@@ -673,8 +673,8 @@ class Check(unittest.TestCase):
     def test_broken_agent_configs_fail(self):
         settings = self.home / '.claude' / 'settings.json'
         config = self.home / '.codex' / 'config.toml'
-        settings.write_text('{"hooks": ')
-        config.write_text('model = \n')
+        settings.write_text('{"hooks": ', encoding='utf-8', newline='\n')
+        config.write_text('model = \n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(settings), result.stdout)

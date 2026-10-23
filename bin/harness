@@ -531,7 +531,7 @@ def main(argv=None):
     sub.add_parser('doctor').add_argument('--home', type=Path, default=Path.home())
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding='utf-8')  # Windows consoles default to cp1252
+        stream.reconfigure(encoding='utf-8', newline='\n')  # Windows: cp1252 and CRLF by default
     if args.command == 'render':
         sys.stdout.write(render(args.agent))
     elif args.command == 'install':
