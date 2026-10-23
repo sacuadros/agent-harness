@@ -9,7 +9,7 @@ Produce the smallest set of vertical slices that delivers the request. No techni
 
 ## Steps
 
-1. Read the request. Ask only about real product decisions that change scope (who uses it, what each user sees, how they sign in), one question at a time, each with a suggested minimal answer. Offer expensive capabilities (offline, i18n, teams, multi-tenant, roles) as out of scope unless the user asked for them.
+1. Read the request. Ask only about real product decisions that change scope (who uses it, what each user sees, how they sign in), all in one round, each with a suggested minimal answer as the first option. Offer expensive capabilities (offline, i18n, teams, multi-tenant, roles) as out of scope unless the user asked for them.
 2. Write each slice as `As <user>, I want <one thing> so that <benefit>.`
    - One behavior per slice. Split any slice that does two things.
    - Each slice crosses every layer it needs and the user can verify it by using it.
@@ -27,7 +27,7 @@ Produce the smallest set of vertical slices that delivers the request. No techni
    New-Item -ItemType Directory -Force .slices | Out-Null; $ex = git rev-parse --git-path info/exclude; if (-not (Select-String -Path $ex -Pattern '^\.slices/$' -Quiet -ErrorAction SilentlyContinue)) { Add-Content $ex '.slices/' }
    ```
 
-5. Show the backlog as a numbered list and wait for the user to approve, reorder, split, or drop slices. If the user said "sin pausas", show it and continue.
+5. Show the backlog as a numbered list. This is the only checkpoint before building. Offer options with "approve and build every slice" first, then adjust (reorder, split, or drop) and stop.
 6. Mirror the approved file to Engram: `mem_save` with `topic_key: slices/<feature>`, `capture_prompt: false`, the full file content, and its path.
 7. Load the `story` skill for B1 yourself; do not ask the user to type a command.
 

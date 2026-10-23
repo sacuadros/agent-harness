@@ -14,7 +14,7 @@ OpenCode, Pi, and Copilot are managed only on PCs where their config folder alre
 
 ## What the harness enforces
 
-- **Slice Flow** instead of upfront specs: a backlog of one-line vertical slices, refined just in time (`story`) and built test by test (`pair`).
+- **Slice Flow** instead of upfront specs: a backlog of one-line vertical slices, refined just in time (`story`) and built test by test (`pair`). You approve the backlog once; the agent builds every slice on its own and stops only for product decisions, alarms, or approvals. Commits and pushes always wait for you. Say "pair" or "con pausas" to slow it down.
 - **Guards** shared by every agent (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution, approval for push/SSH/PR/publish/deploy, no reads of credential files or Keychain secrets, no CodeGraph lifecycle commands, and a backup before editing global agent config.
 - **Memory and code-graph discipline** in Claude Code and Codex (`core/hooks/enforce_memory_graph.py`): save Engram memory after substantive turns, and query CodeGraph before broad searches in indexed repos.
 - **Delegation only for named reasons** (exploration, parallel writers, noisy checks, independent review, context backstop).

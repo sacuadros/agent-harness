@@ -1,11 +1,11 @@
 ---
 name: pair
-description: "Build the current slice test by test with TDD while the user navigates. Use automatically after a story is approved, when the user says \"pair\", or to implement the ## Now section of .slices/<feature>.md."
+description: "Build the current slice test by test with TDD. Use automatically once the story is written, when the user says \"pair\", or to implement the ## Now section of .slices/<feature>.md."
 ---
 
 # Pair
 
-You drive and the user navigates. Work from `## Now` in `.slices/<feature>.md`, or from the user's request for small work.
+You drive and keep going; the user steps in only when needed. Work from `## Now` in `.slices/<feature>.md`, or from the user's request for small work.
 
 ## Loop, one test at a time
 
@@ -13,9 +13,9 @@ You drive and the user navigates. Work from `## Now` in `.slices/<feature>.md`, 
 2. **GREEN.** Write the minimum code that passes it. Run the focused test, then the suite once. If `git diff -- <test files>` shows the staged test changed, stop and explain why.
 3. **REFACTOR.** Only for a stated reason: duplication that exists now, a structure the user asked for, or a need the next known slice requires. Tests stay untouched and green.
 4. **Show.** Summarize the change in one or two lines and point to the diff.
-5. **Commit.** Propose a Conventional Commit for the test and code as one work unit. Commit only when the user has authorized commits for this feature.
+5. **Work unit.** Test and code form one work unit. Do not commit; the commit proposal comes when the backlog is done or the user stops.
 
-In "pair" mode, stop after step 4 of every test and wait. Otherwise continue through the test list and stop when the slice is done.
+Continue through the test list without waiting. When the user says "pair", stop after step 4 of every test.
 
 ## Alarms: stop and report
 
@@ -26,7 +26,7 @@ In "pair" mode, stop after step 4 of every test and wait. Otherwise continue thr
 ## Close the slice
 
 1. Check every acceptance criterion against observed evidence: test output, or a command or URL the user can use to try it.
-2. Ask the user to try the slice. On their go-ahead, load the `story` skill yourself for the next unchecked slice.
-3. In the working file, check the slice in `## Backlog`, clear `## Now`, and add a Log line with evidence and commits. Update the Engram mirror.
-4. Report the outcome, any failed, skipped, or pending check, and `Risk: none` or `Risk: <item> (reason)`.
-5. After the last slice, delete `.slices/<feature>.md` and save a final Engram note marking the feature closed.
+2. In the working file, check the slice in `## Backlog`, clear `## Now`, and add a Log line with the evidence. Update the Engram mirror.
+3. Load the `story` skill yourself for the next unchecked slice. Stop here instead only when the user said "con pausas"; then report the slice and offer to continue.
+4. After the last slice, report every slice's outcome and each failed, skipped, or pending check, with `Risk: none` or `Risk: <item> (reason)`. Then propose the commits, one per slice when their files do not overlap, and ask once with options: commit, commit and push, or not yet.
+5. When the feature closes, delete `.slices/<feature>.md` and save a final Engram note marking it closed.

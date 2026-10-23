@@ -1,6 +1,6 @@
 ---
 name: story
-description: "Refine the next backlog slice just before building it: acceptance criteria, ordered test list, out of scope. Use automatically after the backlog is approved or a slice closes, or when the user asks to detail a story or ticket."
+description: "Refine the next backlog slice just before building it: acceptance criteria, ordered test list, out of scope. Use automatically after the backlog is approved or a slice closes, or when the user asks to detail a story or ticket. Does not wait for approval."
 ---
 
 # Story
@@ -10,7 +10,7 @@ Detail one slice, the next unchecked one in `.slices/<feature>.md` unless the us
 ## Steps
 
 1. Read the slice and its `S#`. Read only the code needed to know the current behavior (CodeGraph first in indexed repos).
-2. List the ambiguities. For each, propose the answer you would assume. Ask the user only about answers that change behavior, and let them confirm the rest in one pass.
+2. List the ambiguities and assume the answer you would propose for each. Stop and ask only when an answer is a product decision the user must make, with your proposal as the first option.
 3. Write `## Now` in the working file:
 
    ```markdown
@@ -28,7 +28,7 @@ Detail one slice, the next unchecked one in `.slices/<feature>.md` unless the us
    - <optional follow-ups, not part of this slice>
    ```
 
-4. Show `## Now` and wait for approval; if the user said "sin pausas", show it and continue. Add a Log line with the decisions, then update the Engram mirror (`topic_key: slices/<feature>`).
+4. Do not wait for approval. Add a Log line with the assumed decisions, then update the Engram mirror (`topic_key: slices/<feature>`).
 5. Load the `pair` skill yourself and start the first test.
 
 ## Rules
