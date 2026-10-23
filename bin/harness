@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Render the agent harness from one source and install it into each agent's home.
+
+  harness render <agent>              print the rendered instructions for one agent
+  harness install [--home] [--dry-run] write changed files, backing up what they replace
+"""
+import argparse
+import shutil
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+INSTRUCTIONS = REPO / 'core' / 'instructions'
+
+AGENTS = {
+    'claude': {'path': '.claude/CLAUDE.md', 'marker': 'claude-native',
+               'vars': {'agent': 'Claude Code', 'cmd': '/'}},
+    'codex': {'path': '.codex/AGENTS.md', 'marker': 'codex-native',
+              'vars': {'agent': 'Codex', 'cmd': '$'}},
+}
+
+
+def sections(agent):
+    """Yield (name, template) in file order; `NN-name.<agent>.md` overrides `NN-name.md`."""
+    chosen = {}
+    for f in sorted(INSTRUCTIONS.glob('*.md')):
+        parts = f.name.split('.')
+        if len(parts) == 3 and parts[1] != agent:
+            continue
+        chosen[parts[0]] = f
+    for stem, f in sorted(chosen.items()):
+        yield stem.split('-', 1)[1], f.read_text()
+
+
+def render(agent):
+    spec = AGENTS[agent]
+    blocks = []
+    for name, body in sections(agent):
+        for key, value in spec['vars'].items():
+            body = body.replace('{{' + key + '}}', value)
+        blocks.append(f'<!-- {spec["marker"]}:{name} -->\n{body}<!-- /{spec["marker"]}:{name} -->\n')
+    return '\n'.join(blocks)
+
+
+def install(home, dry_run=False):
+    changed = False
+    backup_dir = home / '.agent-harness' / 'backups' / time.strftime('%Y%m%d-%H%M%S')
+    for agent, spec in AGENTS.items():
+        target = home / spec['path']
+        content = render(agent)
+        if target.is_file() and target.read_text() == content:
+            continue
+        if dry_run:
+            print(f'would install {target}')
+            changed = True
+            continue
+        if target.is_file():
+            saved = backup_dir / spec['path']
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, saved)
+            print(f'backed up {target} -> {saved}')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        print(f'installed {target}')
+        changed = True
+    if not changed:
+        print('no changes')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog='harness')
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('render').add_argument('agent', choices=AGENTS)
+    inst = sub.add_parser('install')
+    inst.add_argument('--home', type=Path, default=Path.home())
+    inst.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args(argv)
+    if args.command == 'render':
+        sys.stdout.write(render(args.agent))
+    elif args.command == 'install':
+        install(args.home, args.dry_run)
+
+
+if __name__ == '__main__':
+    main()

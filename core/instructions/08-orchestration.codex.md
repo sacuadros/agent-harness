@@ -1,0 +1,23 @@
+## Native {{agent}} Orchestration
+
+- The primary {{agent}} thread is the orchestrator and owns scope, decisions, task boundaries, user communication, approvals, Git delivery, and the final user-facing evidence report.
+- Keep bounded and sequential work in the primary thread. Do not delegate trivial changes or work whose coordination cost exceeds its execution cost.
+- Proactively delegate without waiting for the user when delegation materially improves speed, isolation, specialization, or main-thread context quality.
+- Delegation is mandatory, not optional, when any trigger below applies, unless tool availability, permissions, or a shared-state dependency makes safe delegation impossible:
+  - two or more genuinely independent read-only investigations where each lane is non-trivial or likely to require multiple tool calls;
+  - independent documentation research, triage, summarization, or long/noisy tests, logs, and scans that would otherwise pollute the primary context;
+  - a fresh review required by the selected Standard or Critical assurance level;
+  - two or more implementation units with exclusive, non-overlapping file or module ownership.
+- Before non-trivial work, size it with Slice Flow. Work inline by default; when a delegation trigger above applies, immediately spawn the smallest useful set, normally one per independent lane, and continue useful local work while they run. Do not reinterpret an applicable trigger as a suggestion.
+- Prefer parallel read-only exploration, documentation research, test execution, triage, and review. For implementation, assign one writer per file or ownership boundary and never allow overlapping edits.
+- Route by responsibility only after delegation is warranted. Keep small or sequential work in the primary agent; do not delegate merely to select a cheaper model.
+- Use `implementation-worker` (GPT-6.1 Sol, medium) for bounded implementation with exclusive file ownership; `test-runner` (GPT-6 Luna, high) for prescribed long or noisy checks and factual result classification; `independent-reviewer` (GPT-6.1 Sol, high) for the independent review required by assurance. Do not send ambiguous debugging or critical judgment to the test runner just because it runs tests.
+- For an especially difficult analysis or review that needs Astra, use a bounded generic agent with explicit `model="gpt-6-astra"` and a supported effort justified by the evidence, plus the same review constraints. Do not override `independent-reviewer` at spawn and assume it changed model: custom agent files take precedence. Critical assurance is never reduced by model routing.
+- Model-specific missions must include a self-contained brief and only the necessary inherited context. Follow the runtime's fork/model compatibility rules; if the named role is unavailable in this session, use a generic agent with the same model, effort, ownership and restrictions when permitted. Otherwise report the limitation; never silently substitute a model.
+- A blocked subagent returns evidence and its blocker to the primary agent. It does not create descendants, retry unchanged failures, or escalate models on its own. The primary agent authorizes only evidence-backed retries or escalation within the user's scope.
+- Planning starts at medium effort; use high or max only for a concrete difficulty, not merely because planning mode is active. Do not change the user's main model or increase global concurrency as a side effect of routing. Verify effective model and effort when validating a routing change; model self-reports are not proof.
+- Give every subagent one bounded mission, required evidence, owned paths, exclusions, and an explicit return format.
+- Subagents must not spawn additional agents unless the user explicitly authorizes recursive delegation.
+- Wait for required results, reconcile conflicts, and verify the exact final diff before reporting completion.
+- Subagents must not commit, push, open PRs, merge, publish, deploy, or expand scope unless explicitly authorized.
+- When a `.slices/` backlog is active, it remains the single planning authority. Brief subagents by reference (`.slices/<feature>.md`, slice B2, S3); they execute bounded research, tasks, checks, or reviews, report which `S#` they covered, and never create a parallel plan.
