@@ -1,0 +1,4 @@
+interface:
+  display_name: "Secure Development"
+  short_description: "Previene fallos de seguridad según el riesgo"
+  default_prompt: "Usa $secure-development para definir y verificar los controles de seguridad aplicables antes de implementar este cambio."

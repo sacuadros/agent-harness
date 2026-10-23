@@ -1,0 +1,6 @@
+interface:
+  display_name: "Promote Project Convention"
+  short_description: "Turn an approved convention into repository documentation"
+  default_prompt: "Promote the convention from this conversation into the current repository documentation."
+policy:
+  allow_implicit_invocation: false

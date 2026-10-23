@@ -15,11 +15,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 INSTRUCTIONS = REPO / 'core' / 'instructions'
+SKILLS = REPO / 'core' / 'skills'
+SUBAGENTS = REPO / 'core' / 'agents'
 
 AGENTS = {
-    'claude': {'path': '.claude/CLAUDE.md', 'marker': 'claude-native',
+    'claude': {'path': '.claude/CLAUDE.md', 'skills': '.claude/skills', 'marker': 'claude-native',
                'vars': {'agent': 'Claude Code', 'cmd': '/'}},
-    'codex': {'path': '.codex/AGENTS.md', 'marker': 'codex-native',
+    'codex': {'path': '.codex/AGENTS.md', 'skills': '.codex/skills', 'marker': 'codex-native',
               'vars': {'agent': 'Codex', 'cmd': '$'}},
 }
 
@@ -54,25 +56,83 @@ def render(agent):
     return '\n'.join(blocks)
 
 
+def agent_file(path, agent):
+    """Map `name.<agent>.ext` to `name.ext` for that agent; None when it belongs to another."""
+    parts = path.name.split('.')
+    for i, part in enumerate(parts[1:-1], 1):
+        if part in AGENTS:
+            return path.with_name('.'.join(parts[:i] + parts[i + 1:])) if part == agent else None
+    return path
+
+
+def skill_files(agent):
+    files = {}
+    for f in sorted(SKILLS.rglob('*')):
+        if not f.is_file():
+            continue
+        target = agent_file(f.relative_to(SKILLS), agent)
+        if target is not None and (target not in files or target != f.relative_to(SKILLS)):
+            files[target] = f.read_bytes()
+    return files
+
+
+def claude_subagent(source, spec):
+    lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}',
+             f'model: {spec["model"]}']
+    if 'tools' in spec:
+        lines.append(f'tools: {spec["tools"]}')
+    return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
+
+
+def codex_subagent(source, spec):
+    lines = [f'{key} = {json.dumps(value)}' for key, value in (
+        ('name', source['name']), ('description', spec['description']), ('model', spec['model']),
+        ('model_reasoning_effort', spec['model_reasoning_effort']), ('sandbox_mode', spec['sandbox_mode']))]
+    return '\n'.join(lines) + f'\ndeveloper_instructions = """\n{fill(source["prompt"], spec)}"""\n'
+
+
+SUBAGENT_FORMATS = {'claude': ('.claude/agents/{}.md', claude_subagent),
+                    'codex': ('.codex/agents/{}.toml', codex_subagent)}
+
+
+def fill(text, spec):
+    for key, value in spec.get('vars', {}).items():
+        text = text.replace('{{' + key + '}}', value)
+    return text
+
+
+def outputs():
+    """Every file the harness manages, as home-relative path -> bytes."""
+    files = {}
+    for agent, spec in AGENTS.items():
+        files[spec['path']] = render(agent).encode()
+        for rel, data in skill_files(agent).items():
+            files[f'{spec["skills"]}/{rel}'] = data
+    for f in sorted(SUBAGENTS.glob('*.toml')):
+        source = tomllib.loads(f.read_text())
+        for agent, (path, fmt) in SUBAGENT_FORMATS.items():
+            files[path.format(source['name'])] = fmt(source, source[agent]).encode()
+    return files
+
+
 def install(home, dry_run=False):
     changed = False
     backup_dir = home / '.agent-harness' / 'backups' / time.strftime('%Y%m%d-%H%M%S')
-    for agent, spec in AGENTS.items():
-        target = home / spec['path']
-        content = render(agent)
-        if target.is_file() and target.read_text() == content:
+    for rel, content in outputs().items():
+        target = home / rel
+        if target.is_file() and target.read_bytes() == content:
             continue
         if dry_run:
             print(f'would install {target}')
             changed = True
             continue
         if target.is_file():
-            saved = backup_dir / spec['path']
+            saved = backup_dir / rel
             saved.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, saved)
             print(f'backed up {target} -> {saved}')
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_bytes(content)
         print(f'installed {target}')
         changed = True
     if not changed:
@@ -81,9 +141,9 @@ def install(home, dry_run=False):
 
 def check(home):
     problems = []
-    for agent, spec in AGENTS.items():
-        target = home / spec['path']
-        if not target.is_file() or target.read_text() != render(agent):
+    for rel, content in outputs().items():
+        target = home / rel
+        if not target.is_file() or target.read_bytes() != content:
             problems.append(f'drift: {target}')
     for rel, parse in CONFIGS.items():
         path = home / rel

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SEO & Copy Senior"
+  short_description: "SEO, copy y conversión basados en evidencia"
+  default_prompt: "Usa $seo-copy-senior para auditar esta página y proponer mejoras priorizadas de SEO, mensaje y conversión basadas en evidencia."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Performance Marketing Senior"
+  short_description: "Paid media, medición y crecimiento rentable"
+  default_prompt: "Usa $performance-marketing-senior para auditar esta estrategia de adquisición y proponer mejoras priorizadas de medición, campañas, creativos y rentabilidad."

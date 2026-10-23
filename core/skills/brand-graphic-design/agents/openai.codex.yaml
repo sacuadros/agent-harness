@@ -1,0 +1,4 @@
+interface:
+  display_name: "Brand & Graphic Design"
+  short_description: "Dirección visual y producción gráfica profesional"
+  default_prompt: "Usa $brand-graphic-design para definir la dirección visual y producir este asset con calidad profesional."

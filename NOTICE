@@ -1,0 +1,12 @@
+agent-harness
+
+The following skills are derived from gentle-ai by Gentleman Programming
+(https://github.com/Gentleman-Programming/gentle-ai), licensed under the
+Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0):
+
+- core/skills/work-unit-commits
+- core/skills/chained-pr
+- core/skills/cognitive-doc-design
+
+They were modified to drop gentle-ai-specific workflow references (SDD/ODD,
+skill registry) and to fit this harness's Slice Flow.
