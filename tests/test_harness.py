@@ -38,6 +38,26 @@ def run(*args):
     return subprocess.run([sys.executable, str(HARNESS), *args], capture_output=True, encoding='utf-8')
 
 
+class SliceFlowPacing(unittest.TestCase):
+    """Every agent runs slices on its own after one backlog approval; commits wait for the user."""
+
+    def test_every_agent_gets_the_pacing_contract(self):
+        for agent in ('claude', 'codex', 'opencode', 'pi', 'copilot'):
+            text = harness('render', agent)
+            for rule in ('one checkpoint before building: backlog approval',
+                         'Commits and pushes always wait for the user', 'ask everything pending in one round'):
+                self.assertIn(rule, text, agent)
+            self.assertNotIn('sin pausas', text, agent)
+
+    def test_skills_do_not_wait_or_commit_on_their_own(self):
+        skills = REPO / 'core' / 'skills'
+        self.assertIn('This is the only checkpoint before building', (skills / 'backlog' / 'SKILL.md').read_text(encoding='utf-8'))
+        self.assertIn('Do not wait for approval', (skills / 'story' / 'SKILL.md').read_text(encoding='utf-8'))
+        pair = (skills / 'pair' / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('Do not commit', pair)
+        self.assertIn('commit, commit and push, or not yet', pair)
+
+
 class Render(unittest.TestCase):
     @unittest.skipUnless((HOME / '.claude' / 'CLAUDE.md').is_file(), 'no installed CLAUDE.md')
     def test_claude_matches_installed(self):
@@ -200,6 +220,27 @@ class Hooks(unittest.TestCase):
 
     def commands(self, entries):
         return [' '.join([h['command'], *h.get('args', [])]) for entry in entries for h in entry['hooks']]
+
+    def test_installed_claude_hooks_run_as_written(self):
+        # Exactly what Claude Code spawns: command + args with no shell (py -3 on Windows), from a spaced home.
+        home = Path(tempfile.mkdtemp()) / 'with space'
+        home.mkdir()
+        harness('install', '--home', str(home))
+        data = json.loads((home / '.claude' / 'settings.json').read_text(encoding='utf-8'))
+        env = {**os.environ, 'HOME': str(home), 'USERPROFILE': str(home)}
+        commit = {'tool_name': 'Bash', 'cwd': str(home), 'tool_input': {'command': 'git commit -m "Update stuff"'}}
+        ran = 0
+        for event, entries in data['hooks'].items():
+            for hook in (h for entry in entries for h in entry['hooks']):
+                argv = [hook['command'], *hook['args']]
+                payload = commit if event == 'PreToolUse' else {'cwd': str(home), 'transcript_path': ''}
+                result = subprocess.run(argv, input=json.dumps(payload), capture_output=True,
+                                        encoding='utf-8', timeout=60, env=env)
+                self.assertEqual(result.returncode, 0, (argv, result.stderr))
+                if argv[-1] == 'bash':
+                    self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
+                ran += 1
+        self.assertEqual(ran, 6)
 
     def test_claude_hooks_run_without_a_shell(self):
         # Exec form: Claude spawns the interpreter itself, so zsh, Git Bash and PowerShell behave alike.
