@@ -29,3 +29,7 @@ vars = { lead = "primary agent" }
 description = "Proactive fresh-review role for a completed Critical diff when permitted and useful, or for Standard assurance when evidence warrants it. Do not duplicate a review owned by another skill or plugin."
 tools = "read, grep, find, ls, bash"
 vars = { lead = "primary agent" }
+
+[copilot]
+description = "Proactive fresh-review role for a completed Critical diff when permitted and useful, or for Standard assurance when evidence warrants it. Do not duplicate a review owned by another skill or plugin."
+vars = { lead = "primary agent" }

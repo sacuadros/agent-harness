@@ -30,3 +30,7 @@ vars = { lead = "primary agent" }
 description = "Bounded implementation or fixes with exclusive file ownership, when delegation is warranted."
 tools = "read, grep, find, ls, bash, edit, write"
 vars = { lead = "primary agent" }
+
+[copilot]
+description = "Bounded implementation or fixes with exclusive file ownership, when delegation is warranted."
+vars = { lead = "primary agent" }

@@ -343,6 +343,43 @@ class Pi(unittest.TestCase):
         self.assertFalse((self.home / '.pi').exists())
 
 
+class Copilot(unittest.TestCase):
+    PROMPTS = Path('Library/Application Support/Code/User/prompts')
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def test_render_has_every_section_and_its_own_orchestration(self):
+        text = harness('render', 'copilot')
+        self.assertEqual(len(re.findall(r'<!-- copilot-native:[a-z-]+ -->', text)), 10)
+        self.assertIn('## Native GitHub Copilot Orchestration', text)
+        self.assertNotIn('Claude Code', text)
+
+    def test_install_writes_instructions_agents_hooks_and_retires_old_files(self):
+        (self.home / '.copilot').mkdir()
+        prompts = self.home / self.PROMPTS
+        prompts.mkdir(parents=True)
+        (prompts / 'gentle-ai.instructions.md').write_text('old\n')
+        (prompts / 'sonar-fix.prompt.md').write_text('mine\n')
+        harness('install', '--home', str(self.home))
+        self.assertEqual((self.home / '.copilot' / 'copilot-instructions.md').read_text(),
+                         harness('render', 'copilot'))
+        local = (prompts / 'agent-harness.instructions.md').read_text()
+        self.assertTrue(local.startswith("---\napplyTo: '**'\n"))
+        self.assertFalse((prompts / 'gentle-ai.instructions.md').exists())
+        self.assertTrue((prompts / 'sonar-fix.prompt.md').exists())
+        agent = (self.home / '.copilot' / 'agents' / 'test-runner.agent.md').read_text()
+        self.assertTrue(agent.startswith('---\nname: test-runner\ndescription: '))
+        hooks = json.loads((self.home / '.copilot' / 'hooks' / 'agent-harness.json').read_text())
+        commands = [h['bash'] for h in hooks['hooks']['PreToolUse']]
+        self.assertIn(f'{self.home}/.claude/hooks/harness_guards.py bash --copilot', ' '.join(commands))
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_nothing_for_copilot_when_it_is_not_installed(self):
+        harness('install', '--home', str(self.home))
+        self.assertFalse((self.home / '.copilot').exists())
+
+
 class Doctor(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
@@ -379,6 +416,14 @@ class Doctor(unittest.TestCase):
         (self.home / '.codex' / 'plugins' / 'cache' / 'engram' / 'engram' / '0.1.5').mkdir(parents=True)
         out = self.doctor()
         self.assertIn('engram plugins differ: claude 0.1.0, codex 0.1.5', out)
+
+    def test_vscode_setting_pointing_to_a_missing_file(self):
+        settings = self.home / 'Library/Application Support/Code/User/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{\n  // comment\n  "github.copilot.chat.instructions": [\n'
+                            '    "Lee y sigue las reglas definidas en ~/.config/copilot/instructions.md",\n  ],\n}\n')
+        self.assertIn('github.copilot.chat.instructions points to a missing file: ~/.config/copilot/instructions.md',
+                      self.doctor())
 
     def test_clean_setup_has_no_findings(self):
         self.assertIn('no findings', self.doctor())

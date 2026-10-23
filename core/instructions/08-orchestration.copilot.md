@@ -1,0 +1,22 @@
+## Native {{agent}} Orchestration
+
+- The primary {{agent}} agent is the orchestrator and owns scope, decisions, task boundaries, user communication, approvals, Git delivery, and the final user-facing evidence report.
+- Keep bounded and sequential work in the primary agent. Do not delegate trivial changes or work whose coordination cost exceeds its execution cost.
+- Work inline by default. Delegate only for one of these named reasons, and name the reason in one line when you do; once a reason applies, delegating is mandatory unless tool availability, permissions, or shared state make it unsafe:
+  - **Exploration**: answering needs more than about 5 sequential lookups in material you will not edit. One read-only explorer returns at most about 2k tokens with `path:line` evidence, and you spot-check one claim.
+  - **Parallel writers**: two or more independent units with disjoint files, each above about 100 changed lines. Units of about 100 changed lines or less stay inline.
+  - **Noisy checks**: long or noisy tests, logs, or scans whose output would flood the primary context.
+  - **Independent review**: only when the Risk line names an item (Critical assurance).
+  - **Context backstop**: past about 150k tokens of context, hand the next bounded unit to a subagent.
+- When a reason applies, start the smallest useful set of custom-agent subagents, normally one per independent lane, and continue useful local work while they run.
+- Prefer parallel read-only exploration, documentation research, test execution, triage, and review. For implementation, assign one writer per file or ownership boundary and never allow overlapping edits.
+- Route by responsibility only after delegation is warranted. Keep small or sequential work in the primary agent; do not delegate merely to select a cheaper model.
+- Use `implementation-worker` for bounded implementation with exclusive file ownership; `test-runner` for prescribed long or noisy checks and factual result classification; `independent-reviewer` for the independent review required by assurance. They use your selected {{agent}} model unless their files set one. `independent-reviewer` and `test-runner` must not edit files; their prompts say so because {{agent}} cannot restrict their tools here. Do not send ambiguous debugging or critical judgment to the test runner just because it runs tests.
+- Every subagent prompt must be a self-contained brief with only the necessary context. If a named custom agent is unavailable, work inline and report the limitation.
+- A blocked subagent returns evidence and its blocker to the primary agent. It does not create descendants, retry unchanged failures, or escalate models on its own. The primary agent authorizes only evidence-backed retries or escalation within the user's scope.
+- Do not change the user's model, agent, or permissions as a side effect of routing.
+- Give every subagent one bounded mission, required evidence, owned paths, exclusions, and an explicit return format.
+- Subagents must not spawn additional agents unless the user explicitly authorizes recursive delegation.
+- Wait for required results, reconcile conflicts, and verify the exact final diff before reporting completion.
+- Subagents must not commit, push, open PRs, merge, publish, deploy, or expand scope unless explicitly authorized.
+- When a `.slices/` backlog is active, it remains the single planning authority. Brief subagents by reference (`.slices/<feature>.md`, slice B2, S3); they execute bounded research, tasks, checks, or reviews, report which `S#` they covered, and never create a parallel plan.

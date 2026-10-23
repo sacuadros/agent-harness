@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "bash": "{python} {claude_hooks}/harness_guards.py bash --copilot",
+        "timeoutSec": 5
+      },
+      {
+        "type": "command",
+        "bash": "{python} {claude_hooks}/harness_guards.py backup",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

@@ -15,3 +15,8 @@
 .agents/skills/cognitive-doc-design
 # Pi: the CodeGraph block now lives in ~/.pi/agent/AGENTS.md with the rest of the harness.
 .pi/agent/APPEND_SYSTEM.md
+# VS Code Copilot: gentle-ai and pre-harness instruction files, replaced by agent-harness.instructions.md.
+Library/Application Support/Code/User/prompts/gentle-ai.instructions.md
+Library/Application Support/Code/User/prompts/engram.instructions.md
+Library/Application Support/Code/User/prompts/codegraph.instructions.md
+.config/copilot/copilot-instructions.md

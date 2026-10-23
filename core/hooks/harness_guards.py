@@ -265,6 +265,12 @@ def selftest():
         out = bash_decision({'tool_input': {'command': cmd}}, codex=True)
         return out and out['hookSpecificOutput']['permissionDecision']
 
+    # Copilot: camelCase payloads carry toolArgs as a JSON string; replies need top-level fields.
+    camel = copilot_output({'toolName': 'bash', 'toolArgs': json.dumps({'command': 'git commit -m "wip"'})})
+    assert camel['permissionDecision'] == 'deny' and camel['hookSpecificOutput']['permissionDecision'] == 'deny'
+    snake = copilot_output({'tool_name': 'Bash', 'tool_input': {'command': 'git push'}})
+    assert snake['permissionDecision'] == 'ask'
+    assert copilot_output({'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}) is None
     # execpolicy cannot tell host: from a local path, so remote rsync is the hook's job in Codex.
     assert codex('rsync -a dist/ host:/srv') == 'deny'
     assert codex('rsync -a src/ dst/') is None
@@ -293,13 +299,36 @@ def selftest():
     print('harness_guards selftest: ok')
 
 
+def copilot_input(data):
+    """Copilot sends Claude-style snake_case or its own camelCase with toolArgs as a JSON string."""
+    tool_input = data.get('tool_input')
+    if tool_input is None:
+        raw = data.get('toolArgs') or '{}'
+        tool_input = json.loads(raw) if isinstance(raw, str) else raw
+    tool_input.setdefault('file_path', tool_input.get('filePath') or tool_input.get('path') or '')
+    return {**data, 'tool_input': tool_input, 'session_id': data.get('session_id') or data.get('sessionId')}
+
+
+def copilot_output(data):
+    out = bash_decision(copilot_input(data))
+    if not out:
+        return None
+    spec = out['hookSpecificOutput']
+    return {'permissionDecision': spec['permissionDecision'],
+            'permissionDecisionReason': spec['permissionDecisionReason'], **out}
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ''
     if mode == 'selftest':
         return selftest()
     try:
         data = json.load(sys.stdin)
-        if mode == 'bash':
+        if mode == 'bash' and '--copilot' in sys.argv:
+            result = copilot_output(data)
+        elif mode == 'backup' and ('toolArgs' in data or 'toolName' in data):
+            result = backup(copilot_input(data))
+        elif mode == 'bash':
             result = bash_decision(data, codex='--codex' in sys.argv)
         else:
             result = {'backup': backup}[mode](data)

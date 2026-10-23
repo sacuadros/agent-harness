@@ -38,6 +38,9 @@ AGENTS = {
     # OpenCode reads ~/.claude/skills itself, so it gets no skill copy of its own.
     'opencode': {'path': '.config/opencode/AGENTS.md', 'skills': None, 'marker': 'opencode-native',
                  'vars': {'agent': 'OpenCode', 'cmd': '/'}},
+    # Copilot reads ~/.claude/skills itself.
+    'copilot': {'path': '.copilot/copilot-instructions.md', 'skills': None, 'marker': 'copilot-native',
+                'vars': {'agent': 'GitHub Copilot', 'cmd': '/'}},
     # Pi reads ~/.claude/skills through `skills` in its settings.json.
     'pi': {'path': '.pi/agent/AGENTS.md', 'skills': None, 'marker': 'pi-native',
            'vars': {'agent': 'Pi', 'cmd': '/skill:'}},
@@ -123,10 +126,16 @@ def pi_subagent(source, spec):
     return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
 
 
+def copilot_subagent(source, spec):
+    lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}']
+    return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
+
+
 SUBAGENT_FORMATS = {'claude': ('.claude/agents/{}.md', claude_subagent),
                     'codex': ('.codex/agents/{}.toml', codex_subagent),
                     'opencode': ('.config/opencode/agents/{}.md', opencode_subagent),
-                    'pi': ('.pi/agent/agents/{}.md', pi_subagent)}
+                    'pi': ('.pi/agent/agents/{}.md', pi_subagent),
+                    'copilot': ('.copilot/agents/{}.agent.md', copilot_subagent)}
 
 
 def fill(text, spec):
@@ -244,6 +253,7 @@ def opencode_config(home):
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
+VSCODE_PROMPTS = 'Library/Application Support/Code/User/prompts'
 RULES = '.codex/rules/default.rules'
 RULES_BEGIN = '# >>> agent-harness: managed by bin/harness, edit core/hooks/codex.rules\n'
 RULES_END = '# <<< agent-harness\n'
@@ -265,7 +275,7 @@ def codex_rules(home):
 
 
 # Optional agents get files only on PCs that have them; Claude and Codex are always managed.
-OPTIONAL_AGENTS = {'opencode': '.config/opencode', 'pi': '.pi/agent'}
+OPTIONAL_AGENTS = {'opencode': '.config/opencode', 'pi': '.pi/agent', 'copilot': '.copilot'}
 
 
 def present(agent, home):
@@ -285,6 +295,9 @@ def outputs(home):
         for script in scripts:
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     files[RULES] = codex_rules(home)
+    if present('copilot', home) and (home / VSCODE_PROMPTS).is_dir():  # VS Code's editor-only chat
+        header = "---\napplyTo: '**'\ndescription: agent-harness rules (edit the agent-harness repo)\n---\n\n"
+        files[f'{VSCODE_PROMPTS}/agent-harness.instructions.md'] = (header + render('copilot')).encode()
     if (home / PI_SETTINGS).is_file():
         try:
             files[PI_SETTINGS] = pi_settings(home)
@@ -311,7 +324,8 @@ def outputs(home):
             if present(agent, home):
                 files[path.format(source['name'])] = fmt(source, source[agent]).encode()
     for agent, source, target in (('opencode', 'opencode/agent-harness.ts', '.config/opencode/plugins/agent-harness.ts'),
-                                  ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts')):
+                                  ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts'),
+                                  ('copilot', 'hooks/copilot.json', '.copilot/hooks/agent-harness.json')):
         if present(agent, home):
             guard = (REPO / 'core' / source).read_text()
             guard = guard.replace('{python}', python_for(home)).replace('{claude_hooks}', str(home / '.claude/hooks'))
@@ -446,6 +460,13 @@ def doctor(home):
         known = installed_skill_names(home)
         findings += [f'orphan skill override: {name} (remove it from skillOverrides in {settings})'
                      for name in overrides if name not in known]
+    vscode = home / 'Library/Application Support/Code/User/settings.json'
+    if vscode.is_file():  # JSONC with comments: read the one setting with a regex, never rewrite it
+        block = re.search(r'"github\.copilot\.chat\.instructions"\s*:\s*\[(.*?)\]', vscode.read_text(), re.S)
+        for path in re.findall(r'~/[^\s",]+', block[1] if block else ''):
+            if not (home / path[2:]).exists():
+                findings.append(f'github.copilot.chat.instructions points to a missing file: {path} '
+                                f'(remove that entry from {vscode})')
     seen, duplicates = set(), []
     for entry in os.environ.get('PATH', '').split(':'):
         if entry in seen and entry not in duplicates:
