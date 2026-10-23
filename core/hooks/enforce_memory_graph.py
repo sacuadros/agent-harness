@@ -19,7 +19,7 @@ SUBSTANTIVE_TOOL_CALLS = 8
 # Tools that organize or recall work without producing anything worth remembering.
 BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite')
 MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
-CLI_WRITE = re.compile(r'(?:^|[;&|]\s*)engram\s+(?:save|update)\b')
+CLI_WRITE = re.compile(r'(?:^|[;&|\n]\s*)engram\s+(?:save|update)\b')
 SEARCH_CMD = re.compile(r'^\s*(?:rg|grep|egrep|ag|find|fd|git\s+grep)\b')
 
 
@@ -181,6 +181,9 @@ def selftest():
     cli_save = transcript(('prompt', 'x'), ('Edit', {}), *[('Bash', {'command': 'ls'})] * SUBSTANTIVE_TOOL_CALLS,
                           ('Bash', {'command': 'cd repo && engram save "t" "c" --project p'}))
     assert stop_decision({'transcript_path': cli_save}) is None
+    after_heredoc = transcript(('prompt', 'x'), ('Edit', {}),
+                               ('Bash', {'command': "python3 - <<'EOF'\nprint(1)\nEOF\nengram save t c"}))
+    assert stop_decision({'transcript_path': after_heredoc}) is None
     cli_read = transcript(('prompt', 'x'), ('Edit', {}), ('Bash', {'command': 'engram search harness'}))
     assert stop_decision({'transcript_path': cli_read})['decision'] == 'block'
 

@@ -92,11 +92,12 @@ def _bash_decision(cmd):
         return decision('deny', 'Regla global: los worktrees que pueden usar CodeGraph van '
                                 'bajo el home (<repo-parent>/<repo>-worktrees/<nombre>), '
                                 'nunca en /tmp.')
-    if re.search(SEG + GIT + r'commit\b', cmd):
+    commit = re.search(SEG + GIT + r'commit\b', cmd)
+    if commit:
         if ATTRIBUTION.search(cmd):
             return decision('deny', 'Regla global: los commits no llevan Co-Authored-By ni '
                                     'atribución a IA. Quita esas líneas.')
-        subject = commit_subject(cmd)
+        subject = commit_subject(cmd[commit.start():])  # ignore -m of earlier commands (python3 -m)
         if subject is not None and not CONVENTIONAL.match(subject):
             return decision('deny', f'Regla global: usa Conventional Commits '
                                     f'(tipo(scope): resumen). Asunto recibido: "{subject[:80]}"')
@@ -167,6 +168,8 @@ def selftest():
     assert bash('git commit -m "Update stuff"') == 'deny'
     assert bash('git add -A && git commit -m "fix: handle nil"') is None
     assert bash('git commit --amend --no-edit') is None
+    assert bash('python3 -m unittest t && git commit -m "fix: ok"') is None
+    assert bash('python3 -m unittest t && git commit -m "wip"') == 'deny'
     assert bash('git commit -qm "update stuff"') == 'deny'
     assert bash('git commit -am "chore: bump"') is None
     assert bash('git push origin main') == 'ask'
