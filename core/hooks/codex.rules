@@ -2,7 +2,7 @@
 # need explicit user approval for destination and operation (CLAUDE.md "Remote operation
 # authorization"). Hooks cannot "ask" in Codex, so these prompts live here.
 prefix_rule(pattern=["git", "push"], decision="prompt", justification="Remote operation: requires explicit user authorization.", match=["git push origin main"])
-prefix_rule(pattern=[["ssh", "scp", "sftp", "mosh", "rsync"]], decision="prompt", justification="Remote connection or transfer: requires explicit user authorization.", match=["ssh host uptime", "rsync -a dist/ host:/srv"])
+prefix_rule(pattern=[["ssh", "scp", "sftp", "mosh"]], decision="prompt", justification="Remote connection or transfer: requires explicit user authorization.", match=["ssh host uptime", "scp dist.tgz host:/srv"])
 prefix_rule(pattern=["gh", "pr", ["create", "merge", "close", "ready", "comment", "review"]], decision="prompt", justification="GitHub PR operation: requires explicit user authorization.", match=["gh pr create --fill"], not_match=["gh pr view 3"])
 prefix_rule(pattern=["gh", "release", "create"], decision="prompt", justification="GitHub release: requires explicit user authorization.")
 prefix_rule(pattern=["gh", "repo", ["create", "delete"]], decision="prompt", justification="GitHub repository operation: requires explicit user authorization.")

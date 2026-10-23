@@ -112,7 +112,7 @@ def codegraph_used(path):
         for t in tool_uses(e):
             name = t.get('name', '')
             cmd = t.get('input', {}).get('command', '') if name == 'Bash' else ''
-            if 'codegraph' in name or re.match(r'^\s*codegraph\s', cmd):
+            if 'codegraph' in name or re.search(r'(?:^|[;&|\n]\s*)codegraph\s', cmd):
                 return True
     return False
 
@@ -197,7 +197,8 @@ def selftest():
                              'tool_input': {'command': 'grep -rn foo .'}})
     assert pretool_decision({'tool_name': 'Bash', 'cwd': repo, 'transcript_path': fresh,
                              'tool_input': {'command': 'git status'}}) is None
-    for used in (('mcp__codegraph__codegraph_explore', {}), ('Bash', {'command': 'codegraph query x'})):
+    for used in (('mcp__codegraph__codegraph_explore', {}), ('Bash', {'command': 'codegraph query x'}),
+                 ('Bash', {'command': 'cd repo && codegraph query x'})):
         path = transcript(('prompt', 'x'), used)
         assert pretool_decision({'tool_name': 'Grep', 'cwd': repo, 'transcript_path': path}) is None
     # Codex rollouts: event_msg/item_completed items, optionally zstd-compressed.

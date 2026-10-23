@@ -31,9 +31,10 @@ GIT = r'git\s+(?:-[Cc]\s+\S+\s+|-\S+\s+)*'  # global options, incl. -C <path>
 CONVENTIONAL = re.compile(
     r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: \S')
 ATTRIBUTION = re.compile(r'co-authored-by|generated with \[?claude|🤖', re.I)
+RSYNC_REMOTE = r'rsync\s[^;&|]*\S+:'
 REMOTE = [
     (r'(?:ssh|scp|sftp|mosh)\s', 'conexión remota'),
-    (r'rsync\s[^;&|]*\S+:', 'transferencia remota con rsync'),
+    (RSYNC_REMOTE, 'transferencia remota con rsync'),
     (GIT + r'push\b', 'git push'),
     (r'gh\s+pr\s+(?:create|merge|close|ready|comment|review)\b', 'operación de PR en GitHub'),
     (r'gh\s+(?:release\s+create|repo\s+(?:create|delete)|workflow\s+run)\b', 'operación en GitHub'),
@@ -74,7 +75,8 @@ def reads_credentials(cmd):
 CODEGRAPH_FORBIDDEN = re.compile(SEG + r'codegraph\s+(uninit|install|uninstall|upgrade)\b')
 # What Codex execpolicy prefix rules can match once it unwraps `bash -lc` into plain commands.
 PLAIN_SEG = r'(?:^|[;&|\n]\s*)'
-CODEX_PROMPTED = [p.replace(GIT, r'git\s+') for p, _ in REMOTE] + [r'codegraph\s+index\b']
+# rsync is left out: execpolicy cannot tell host: from a local path, so the hook handles it.
+CODEX_PROMPTED = [p.replace(GIT, r'git\s+') for p, _ in REMOTE if p != RSYNC_REMOTE] + [r'codegraph\s+index\b']
 PATCH_FILE = re.compile(r'^\*\*\* (?:Update|Delete) File: (.+)$', re.M)  # Codex apply_patch
 CODEGRAPH_INDEX = re.compile(SEG + r'codegraph\s+index\b')
 TMP_WORKTREE = re.compile(SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:\S+\s+)?)*'
@@ -107,6 +109,9 @@ def bash_decision(data, codex=False):
         # Codex rejects "ask"; ~/.codex/rules/default.rules prompts, but only for plain forms.
         if any(re.search(PLAIN_SEG + p, cmd) for p in CODEX_PROMPTED):
             return None
+        if re.search(SEG + RSYNC_REMOTE, cmd):
+            return decision('deny', 'Regla global: rsync remoto requiere autorización explícita. '
+                                    'Pide permiso al usuario y usa `scp`, que Codex sí pide aprobar.')
         return decision('deny', 'Regla global: operación remota en una forma que las reglas de '
                                 'Codex no ven (git -C/-c, VAR=, $(), subshell). Reescríbela en '
                                 'forma simple (p. ej. `cd repo && git push`) para que Codex pida '
@@ -260,6 +265,10 @@ def selftest():
         out = bash_decision({'tool_input': {'command': cmd}}, codex=True)
         return out and out['hookSpecificOutput']['permissionDecision']
 
+    # execpolicy cannot tell host: from a local path, so remote rsync is the hook's job in Codex.
+    assert codex('rsync -a dist/ host:/srv') == 'deny'
+    assert codex('rsync -a src/ dst/') is None
+    assert bash('rsync -a dist/ host:/srv') == 'ask'
     assert codex('git push') is None
     assert codex('cd ../repo && git push origin x') is None
     assert codex('ssh host uptime') is None

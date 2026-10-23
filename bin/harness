@@ -4,9 +4,11 @@
   harness render <agent>              print the rendered instructions for one agent
   harness install [--home] [--dry-run] write changed files, backing up what they replace
   harness check [--home]              exit 1 if anything installed drifted or is broken
+  harness doctor [--home]             report leftovers and version drift (read-only)
 """
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -304,6 +306,71 @@ def check(home):
     return 1 if problems else 0
 
 
+# Claude Code's own skills; overrides for them are never orphans. New built-ins need adding here.
+BUILTIN_SKILLS = {'init', 'review', 'security-review', 'simplify', 'loop', 'schedule', 'claude-api',
+                  'update-config', 'keybindings-help', 'fewer-permission-prompts'}
+
+
+def installed_skill_names(home):
+    names = {d.name for d in (home / '.claude/skills').glob('*') if d.is_dir()}
+    cache = home / '.claude/plugins/cache'
+    for skill in [*cache.glob('*/*/*/skills/*'), *cache.glob('*/*/*/commands/*.md')]:
+        plugin, name = skill.parents[2].name, skill.stem  # plugin commands act as skills too
+        names |= {name, f'{plugin}:{name}'}
+    return names | BUILTIN_SKILLS
+
+
+def engram_versions(home):
+    claude = codex = None
+    installed = home / '.claude/plugins/installed_plugins.json'
+    if installed.is_file():
+        entries = json.loads(installed.read_text()).get('plugins', {}).get('engram@engram') or [{}]
+        claude = entries[0].get('version')
+    cached = sorted(d.name for d in (home / '.codex/plugins/cache/engram/engram').glob('*') if d.is_dir())
+    codex = cached[-1] if cached else None
+    binary = update = None
+    if shutil.which('engram'):
+        out = subprocess.run(['engram', 'version'], capture_output=True, text=True, timeout=30)
+        binary = (re.search(r'engram v?(\d\S*)', out.stdout) or [None, None])[1]
+    if binary and shutil.which('brew'):  # engram prints its own update notice only to a terminal
+        out = subprocess.run(['brew', 'info', '--json=v2', 'engram'], capture_output=True, text=True, timeout=60)
+        try:
+            stable = json.loads(out.stdout)['formulae'][0]['versions']['stable']
+            update = f'{binary} -> {stable}' if stable != binary else None
+        except (ValueError, KeyError, IndexError):
+            pass
+    return binary, claude, codex, update
+
+
+def doctor(home):
+    """Report leftovers and version drift; never changes anything."""
+    findings = []
+    settings = home / '.claude/settings.json'
+    if settings.is_file():
+        overrides = json.loads(settings.read_text()).get('skillOverrides', {})
+        known = installed_skill_names(home)
+        findings += [f'orphan skill override: {name} (remove it from skillOverrides in {settings})'
+                     for name in overrides if name not in known]
+    seen, duplicates = set(), []
+    for entry in os.environ.get('PATH', '').split(':'):
+        if entry in seen and entry not in duplicates:
+            duplicates.append(entry)
+        seen.add(entry)
+    findings += [f'duplicate PATH entry: {entry} (added twice by your shell startup files)'
+                 for entry in duplicates]
+    binary, claude, codex, update = engram_versions(home)
+    print(f'engram: binary {binary or "not found"}, claude plugin {claude or "-"}, codex plugin {codex or "-"}')
+    if claude and codex and claude != codex:
+        findings.append(f'engram plugins differ: claude {claude}, codex {codex}')
+    if update:
+        findings.append(f'engram update available: {update} (brew upgrade engram)')
+    for finding in findings:
+        print(finding)
+    if not findings:
+        print('no findings')
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='harness')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -312,6 +379,7 @@ def main(argv=None):
     inst.add_argument('--home', type=Path, default=Path.home())
     inst.add_argument('--dry-run', action='store_true')
     sub.add_parser('check').add_argument('--home', type=Path, default=Path.home())
+    sub.add_parser('doctor').add_argument('--home', type=Path, default=Path.home())
     args = parser.parse_args(argv)
     if args.command == 'render':
         sys.stdout.write(render(args.agent))
@@ -319,6 +387,8 @@ def main(argv=None):
         install(args.home, args.dry_run)
     elif args.command == 'check':
         return check(args.home)
+    elif args.command == 'doctor':
+        return doctor(args.home)
 
 
 if __name__ == '__main__':

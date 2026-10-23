@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -233,6 +234,47 @@ class Hooks(unittest.TestCase):
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'selftest failed: {broken}', result.stdout)
+
+
+class Doctor(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.env = {**os.environ, 'PATH': '/usr/bin:/bin'}
+
+    def doctor(self, **env):
+        result = subprocess.run([sys.executable, str(HARNESS), 'doctor', '--home', str(self.home)],
+                                capture_output=True, text=True, env={**self.env, **env})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_orphan_skill_overrides(self):
+        (self.home / '.claude' / 'skills' / 'present').mkdir(parents=True)
+        command = self.home / '.claude/plugins/cache/market/tool/1.0/commands/tool-review.md'
+        command.parent.mkdir(parents=True)
+        command.write_text('# review\n')
+        (self.home / '.claude' / 'settings.json').write_text(json.dumps({'skillOverrides': {
+            'present': 'off', 'ghost': 'off', 'init': 'user-invocable-only', 'tool:tool-review': 'off'}}))
+        out = self.doctor()
+        self.assertIn('orphan skill override: ghost', out)
+        self.assertNotIn('present', out)
+        self.assertNotIn('tool-review', out)
+        self.assertNotIn(': init', out)
+
+    def test_duplicate_path_entries(self):
+        out = self.doctor(PATH='/a:/usr/bin:/a:/bin')
+        self.assertEqual(out.count('duplicate PATH entry: /a'), 1)
+
+    def test_engram_plugin_versions_differ(self):
+        plugins = self.home / '.claude' / 'plugins'
+        plugins.mkdir(parents=True)
+        (plugins / 'installed_plugins.json').write_text(json.dumps(
+            {'plugins': {'engram@engram': [{'version': '0.1.0'}]}}))
+        (self.home / '.codex' / 'plugins' / 'cache' / 'engram' / 'engram' / '0.1.5').mkdir(parents=True)
+        out = self.doctor()
+        self.assertIn('engram plugins differ: claude 0.1.0, codex 0.1.5', out)
+
+    def test_clean_setup_has_no_findings(self):
+        self.assertIn('no findings', self.doctor())
 
 
 class Delegation(unittest.TestCase):
