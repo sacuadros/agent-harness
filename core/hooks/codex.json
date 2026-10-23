@@ -4,7 +4,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "{python} {codex_hooks}/engram_auto_enroll.py",
+          "command": "{python}",
+          "args": ["{codex_hooks}/engram_auto_enroll.py"],
           "async": true,
           "timeout": 120
         }
@@ -14,7 +15,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "{python} {claude_hooks}/enforce_memory_graph.py stop",
+          "command": "{python}",
+          "args": ["{claude_hooks}/enforce_memory_graph.py", "stop"],
           "timeout": 5
         }
       ]
@@ -26,7 +28,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "{python} {codex_hooks}/engram_auto_enroll.py",
+          "command": "{python}",
+          "args": ["{codex_hooks}/engram_auto_enroll.py"],
           "async": true,
           "timeout": 120
         }
@@ -39,7 +42,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "{python} {claude_hooks}/harness_guards.py bash --codex",
+          "command": "{python}",
+          "args": ["{claude_hooks}/harness_guards.py", "bash", "--codex"],
           "timeout": 5
         }
       ]
@@ -49,7 +53,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "{python} {claude_hooks}/enforce_memory_graph.py pretool",
+          "command": "{python}",
+          "args": ["{claude_hooks}/enforce_memory_graph.py", "pretool"],
           "timeout": 5
         }
       ]
@@ -59,7 +64,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "{python} {claude_hooks}/harness_guards.py backup",
+          "command": "{python}",
+          "args": ["{claude_hooks}/harness_guards.py", "backup"],
           "timeout": 5
         }
       ]

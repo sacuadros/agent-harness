@@ -217,6 +217,29 @@ class Hooks(unittest.TestCase):
                       self.commands(data['hooks']['PreToolUse']))
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX command form')
+    def test_codex_commands_stay_plain_on_posix(self):
+        # Codex trusts hooks by command hash: unchanged bytes mean no re-approval on the Mac.
+        (self.home / '.agent-harness').mkdir()
+        (self.home / '.agent-harness' / 'config.toml').write_text('python = "/usr/bin/python3"\n', encoding='utf-8', newline='\n')
+        self.install()
+        hooks = json.loads((self.home / '.codex' / 'hooks.json').read_text(encoding='utf-8'))['hooks']
+        self.assertIn(f'/usr/bin/python3 {self.home.as_posix()}/.claude/hooks/harness_guards.py bash --codex',
+                      self.commands(hooks['PreToolUse']))
+
+    def test_codex_guard_commands_run_in_the_platform_hook_shell(self):
+        # Codex runs hook commands with sh on POSIX and PowerShell on Windows; profiles may have spaces.
+        home = Path(tempfile.mkdtemp()) / 'with space'
+        home.mkdir()
+        harness('install', '--home', str(home))
+        hooks = json.loads((home / '.codex' / 'hooks.json').read_text(encoding='utf-8'))['hooks']
+        guard = next(c for c in self.commands(hooks['PreToolUse']) if c.endswith('--codex'))
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        payload = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 'git commit -m "Update stuff"'}})
+        result = subprocess.run([*shell, guard], input=payload, capture_output=True, encoding='utf-8')
+        self.assertEqual(result.returncode, 0, (guard, result.stderr))
+        self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
+
     def test_codex_hooks_keep_foreign_entries_at_their_index(self):
         foreign = {'hooks': [{'type': 'command', 'command': 'impeccable hook', 'timeout': 30}]}
         old = lambda cmd: {'hooks': [{'type': 'command', 'command': cmd}]}

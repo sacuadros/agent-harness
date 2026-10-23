@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -169,7 +170,7 @@ def python_for(home):
 def hook_key(entry):
     """`script mode` for an entry that runs a harness script; None for anyone else's hook."""
     for hook in entry.get('hooks', []):
-        found = re.search(r'/hooks/([\w.]+\.py)(?:\s+(\S+))?', ' '.join([hook.get('command', ''), *hook.get('args', [])]))
+        found = re.search(r'/hooks/([\w.]+\.py)["\']?(?:\s+(\S+))?', ' '.join([hook.get('command', ''), *hook.get('args', [])]))
         if found and found[1] in HARNESS_SCRIPTS:
             return f'{found[1]} {found[2] or ""}'.strip()
     return None
@@ -200,9 +201,11 @@ def hook_config(agent, home):
                        'codex_hooks': (home / '.codex/hooks').as_posix()}.items():
         template = template.replace('{' + key + '}', value)
     desired = json.loads(template)
-    if agent == 'claude':  # exec form: Claude spawns the interpreter itself, with no shell on any OS
-        for hook in (h for entries in desired.values() for entry in entries for h in entry['hooks']):
+    for hook in (h for entries in desired.values() for entry in entries for h in entry['hooks']):
+        if agent == 'claude':  # exec form: Claude spawns the interpreter itself, with no shell on any OS
             hook['command'], hook['args'] = python[0], python[1:] + hook['args']
+        else:  # Codex runs a shell string: sh on POSIX, PowerShell on Windows (which takes cmd-style quotes)
+            hook['command'] = (subprocess.list2cmdline if os.name == 'nt' else shlex.join)(python + hook.pop('args'))
     data['hooks'] = merge_hooks(data.get('hooks', {}), desired)
     if agent == 'claude':
         data.setdefault('enabledPlugins', {}).update(PLUGINS['claude'])
