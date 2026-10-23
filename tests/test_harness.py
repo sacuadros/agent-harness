@@ -1,13 +1,16 @@
+import importlib.util
 import json
 import re
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 HARNESS = REPO / 'bin' / 'harness'
@@ -475,6 +478,61 @@ class NewPC(unittest.TestCase):
         result = subprocess.run([sys.executable, '-c', fake], capture_output=True, encoding='utf-8')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('needs Python 3.11 or newer', result.stderr)
+
+
+def load_hook(name):
+    spec = importlib.util.spec_from_file_location(name, REPO / 'core' / 'hooks' / f'{name}.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+FAKE_ENGRAM = """import os, sqlite3, sys
+conn = sqlite3.connect(os.path.join(os.environ['ENGRAM_DATA_DIR'], 'engram.db'))
+conn.execute('INSERT INTO sync_enrolled_projects VALUES (?)', (sys.argv[3],))
+conn.commit()
+conn.close()
+"""
+
+
+class EngramEnroll(unittest.TestCase):
+    """The auto-enroll hook runs on SessionStart and Stop for Claude Code and Codex, on every OS."""
+
+    def setUp(self):
+        self.hook = load_hook('engram_auto_enroll')
+        self.data = Path(tempfile.mkdtemp())
+        conn = sqlite3.connect(self.data / 'engram.db')
+        conn.executescript(
+            'CREATE TABLE observations (project, deleted_at); CREATE TABLE sessions (project);'
+            'CREATE TABLE user_prompts (project); CREATE TABLE sync_enrolled_projects (project);'
+            "INSERT INTO sessions VALUES ('app'), ('scratch-x');")
+        conn.commit()
+        conn.close()
+        fake = self.data / 'fake_engram.py'
+        fake.write_text(FAKE_ENGRAM, encoding='utf-8', newline='\n')
+        self.engram = [sys.executable, str(fake)]
+
+    def test_enrolls_missing_projects_once(self):
+        self.assertEqual(self.hook.enroll_missing(self.data, self.engram), 1)
+        self.assertEqual(self.hook.enroll_missing(self.data, self.engram), 0)
+
+    def test_skips_while_another_session_holds_the_lock(self):
+        with open(self.data / 'codex-auto-enroll.lock', 'w') as other:
+            self.hook.try_lock(other)
+            self.assertEqual(self.hook.enroll_missing(self.data, ['no-such-engram']), 0)
+
+    def test_without_a_database_does_nothing(self):
+        self.assertEqual(self.hook.enroll_missing(Path(tempfile.mkdtemp()), ['no-such-engram']), 0)
+
+    def test_finds_engram_on_path_before_homebrew(self):
+        bin_dir = Path(tempfile.mkdtemp())
+        exe = bin_dir / ('engram.exe' if os.name == 'nt' else 'engram')
+        exe.write_text('', encoding='utf-8')
+        exe.chmod(0o755)
+        with mock.patch.dict(os.environ, {'PATH': str(bin_dir)}):
+            self.assertEqual(os.path.normcase(self.hook.engram_command()[0]), os.path.normcase(str(exe)))
+        with mock.patch.dict(os.environ, {'PATH': ''}):
+            self.assertEqual(self.hook.engram_command(), ['/opt/homebrew/bin/engram'])
 
 
 class Portability(unittest.TestCase):

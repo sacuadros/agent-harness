@@ -2,10 +2,10 @@
 
 Shares the lock file with the Codex hook so both agents never enroll concurrently.
 Scratch workspaces (scratch-*) are never enrolled."""
-import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -21,17 +21,32 @@ EXCEPT SELECT project FROM sync_enrolled_projects
 """
 
 
-def enroll_missing(data_dir, executable):
+def try_lock(f):
+    """Non-blocking exclusive lock; raises OSError while another session holds it."""
+    if os.name == 'nt':
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def engram_command():
+    # GUI-launched agents may run hooks without Homebrew on PATH.
+    return [shutil.which('engram') or '/opt/homebrew/bin/engram']
+
+
+def enroll_missing(data_dir, engram):
     data_dir = Path(data_dir).resolve()
     db = data_dir / 'engram.db'
     if not db.is_file():
         return 0
     # One enrollment pass per database, even with several simultaneous agent sessions.
-    fd = os.open(data_dir / 'codex-auto-enroll.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    fd = os.open(data_dir / 'codex-auto-enroll.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     with os.fdopen(fd, 'w') as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            try_lock(lock)
+        except OSError:
             return 0
         with sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, timeout=2) as conn:
             missing = [row[0] for row in conn.execute(MISSING)]
@@ -49,7 +64,7 @@ def enroll_missing(data_dir, executable):
                 break
             try:
                 subprocess.run(
-                    [str(executable), 'cloud', 'enroll', project],
+                    [*engram, 'cloud', 'enroll', project],
                     env=env, cwd=str(data_dir), stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     check=True, timeout=min(30, remaining),
@@ -71,7 +86,7 @@ def enroll_missing(data_dir, executable):
 
 def main():
     try:
-        enroll_missing(Path.home() / '.engram', '/opt/homebrew/bin/engram')
+        enroll_missing(Path.home() / '.engram', engram_command())
     except Exception:
         # Fail visibly but never block a turn or expose subprocess output/secrets.
         print(json.dumps({'systemMessage':
