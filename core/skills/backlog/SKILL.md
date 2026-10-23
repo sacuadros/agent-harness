@@ -21,6 +21,12 @@ Produce the smallest set of vertical slices that delivers the request. No techni
    mkdir -p .slices && ex="$(git rev-parse --git-path info/exclude)" && { grep -qxF '.slices/' "$ex" || echo '.slices/' >> "$ex"; }
    ```
 
+   In PowerShell:
+
+   ```powershell
+   New-Item -ItemType Directory -Force .slices | Out-Null; $ex = git rev-parse --git-path info/exclude; if (-not (Select-String -Path $ex -Pattern '^\.slices/$' -Quiet -ErrorAction SilentlyContinue)) { Add-Content $ex '.slices/' }
+   ```
+
 5. Show the backlog as a numbered list and wait for the user to approve, reorder, split, or drop slices. If the user said "sin pausas", show it and continue.
 6. Mirror the approved file to Engram: `mem_save` with `topic_key: slices/<feature>`, `capture_prompt: false`, the full file content, and its path.
 7. Load the `story` skill for B1 yourself; do not ask the user to type a command.

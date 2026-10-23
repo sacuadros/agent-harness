@@ -21,7 +21,8 @@ OpenCode, Pi, and Copilot are managed only on PCs where their config folder alre
 
 ## Requirements
 
-- macOS or Linux, Git, and Python 3.11 or newer. Python 3.14 adds the Codex compressed-transcript checks; on older versions the hook skips them.
+- macOS, Linux, or Windows 10/11 (native, not WSL), Git, and Python 3.11 or newer. Python 3.14 adds the Codex compressed-transcript checks; on older versions the hook skips them.
+- On Windows the harness manages Claude Code and Codex only; OpenCode, Pi, and Copilot are macOS and Linux for now.
 - The agents you use, already installed and signed in.
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) and [CodeGraph](https://github.com/colbymchenry/codegraph), which the rules expect.
 
@@ -38,12 +39,30 @@ bin/harness doctor              # read-only report: leftovers, PATH duplicates, 
 
 Codex asks you to trust new hooks the first time it sees them. Approve them once in the Codex app.
 
+### Windows
+
+In PowerShell; `~` in this README means `%USERPROFILE%`:
+
+```powershell
+winget install --id Git.Git -e                # Git, plus the Git Bash that Claude Code uses when present
+winget install --id Python.Python.3.14 -e     # Python and the py launcher the hooks run through
+git clone <this repo> $HOME\personal-repos\agent-harness
+cd $HOME\personal-repos\agent-harness
+py -3 bin/harness install --dry-run
+py -3 bin/harness install
+py -3 bin/harness check
+py -3 bin/harness doctor
+```
+
+- Claude Code runs the hooks directly, with no shell, so they work with or without Git Bash. They also guard its PowerShell tool.
+- Codex runs its hooks through PowerShell, in the ChatGPT app and in the CLI alike. Approve them once in Codex after the first install. Approve them again whenever an update changes a hook command; `bin/harness install` lists `.codex/hooks.json` when that happens.
+
 ### Per-PC settings
 
 `~/.agent-harness/config.toml` is never committed:
 
 ```toml
-python = "/opt/homebrew/bin/python3"   # interpreter for the hooks; default: python3 on PATH
+python = "/opt/homebrew/bin/python3"   # interpreter for the hooks; default: python3 on PATH, py -3 on Windows
 ```
 
 ### Engram cloud token (macOS)
@@ -57,10 +76,28 @@ security add-generic-password -s engram-cloud-token -a "$USER" -w   # prompts fo
 Then add a LaunchAgent at `~/Library/LaunchAgents/<your-label>.engram-token.plist` whose program runs
 `/bin/launchctl setenv ENGRAM_CLOUD_TOKEN "$(/usr/bin/security find-generic-password -s engram-cloud-token -w)"` with `RunAtLoad` set, and load it with `launchctl load`. Codex receives the variable through `env_vars` in its Engram MCP config, which the harness manages; Claude Code inherits it.
 
+### Engram cloud token (Windows)
+
+Store it as a user environment variable. The prompt hides what you type, and the token stays out of your PowerShell history:
+
+```powershell
+$token = Read-Host 'Engram cloud token' -AsSecureString
+[Environment]::SetEnvironmentVariable('ENGRAM_CLOUD_TOKEN', [Net.NetworkCredential]::new('', $token).Password, 'User')
+Remove-Variable token
+```
+
+Restart Claude Code and the ChatGPT app so they pick it up. Codex receives it through the same `env_vars` entry.
+
 ## Sync
 
 ```bash
 git pull && bin/harness install && bin/harness check
+```
+
+In Windows PowerShell:
+
+```powershell
+git pull; if ($?) { py -3 bin/harness install }; if ($?) { py -3 bin/harness check }
 ```
 
 ## Backups and rollback

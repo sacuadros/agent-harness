@@ -82,6 +82,39 @@ class Skills(unittest.TestCase):
         self.home = Path(tempfile.mkdtemp())
         harness('install', '--home', str(self.home))
 
+    def powershell_block(self, text):
+        found = re.search(r'```powershell\n(.*?)```', text, re.S)
+        self.assertIsNotNone(found, 'no PowerShell form')
+        return found[1]
+
+    def test_backlog_skill_has_a_powershell_form(self):
+        # Codex on Windows always runs PowerShell; Claude does too without Git Bash.
+        for agent_dir in ('.claude', '.codex'):
+            self.powershell_block((self.home / agent_dir / 'skills' / 'backlog' / 'SKILL.md').read_text(encoding='utf-8'))
+
+    @unittest.skipUnless(os.name == 'nt', 'runs PowerShell')
+    def test_backlog_powershell_form_excludes_slices_once(self):
+        command = self.powershell_block((REPO / 'core' / 'skills' / 'backlog' / 'SKILL.md').read_text(encoding='utf-8'))
+        repo = Path(tempfile.mkdtemp())
+        subprocess.run(['git', 'init', '-q'], cwd=repo, check=True)
+        for _ in range(2):
+            result = subprocess.run(['powershell', '-NoProfile', '-Command', command], cwd=repo,
+                                    capture_output=True, encoding='utf-8')
+            self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertTrue((repo / '.slices').is_dir())
+        exclude = (repo / '.git' / 'info' / 'exclude').read_text(encoding='utf-8')
+        self.assertEqual(exclude.splitlines().count('.slices/'), 1)
+        (repo / '.slices' / 'x.md').write_text('x', encoding='utf-8')
+        self.assertEqual(subprocess.run(['git', 'check-ignore', '-q', '.slices/x.md'], cwd=repo).returncode, 0)
+
+    @unittest.skipUnless(os.name == 'nt', 'README PowerShell setup')
+    def test_readme_windows_install_command_runs(self):
+        home = Path(tempfile.mkdtemp())
+        result = subprocess.run(['powershell', '-NoProfile', '-Command', f'py -3 bin/harness install --dry-run --home "{home}"'],
+                                cwd=REPO, capture_output=True, encoding='utf-8')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('would install', result.stdout)
+
     def assert_matches_installed(self, agent_dir):
         rendered = self.home / agent_dir / 'skills'
         self.assertEqual({d.name for d in rendered.iterdir()}, MANAGED_SKILLS)
