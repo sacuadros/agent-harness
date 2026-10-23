@@ -86,16 +86,19 @@ def last_turn_tools(path):
     return turn
 
 
+SHELLS = ('Bash', 'PowerShell')  # Claude Code on Windows has a separate PowerShell tool
+
+
 def stop_decision(data):
     if data.get('stop_hook_active'):
         return None
     turn = last_turn_tools(data.get('transcript_path', ''))
     names = [t.get('name', '') for t in turn]
     if any(n.endswith(ENGRAM_WRITES) for n in names) or any(
-            CLI_WRITE.search(t.get('input', {}).get('command', '')) for t in turn if t.get('name') == 'Bash'):
+            CLI_WRITE.search(t.get('input', {}).get('command', '')) for t in turn if t.get('name') in SHELLS):
         return None
     names = [n for n in names if not n.startswith(BOOKKEEPING) and not n.endswith(MEMORY_READS)]
-    waiting = any(t.get('name') == 'Agent' or (t.get('name') == 'Bash' and t.get('input', {}).get(
+    waiting = any(t.get('name') == 'Agent' or (t.get('name') in SHELLS and t.get('input', {}).get(
         'run_in_background')) for t in turn)
     if waiting and not (EDIT_TOOLS & set(names)):
         return None  # results arrive in a later turn; that turn decides what to remember
@@ -111,7 +114,7 @@ def codegraph_used(path):
     for e in entries(path):
         for t in tool_uses(e):
             name = t.get('name', '')
-            cmd = t.get('input', {}).get('command', '') if name == 'Bash' else ''
+            cmd = t.get('input', {}).get('command', '') if name in SHELLS else ''
             if 'codegraph' in name or re.search(r'(?:^|[;&|\n]\s*)codegraph\s', cmd):
                 return True
     return False
@@ -129,9 +132,9 @@ def indexed_root(cwd):
 
 def pretool_decision(data):
     tool = data.get('tool_name')
-    if tool == 'Bash' and not SEARCH_CMD.match(data.get('tool_input', {}).get('command', '')):
+    if tool in SHELLS and not SEARCH_CMD.match(data.get('tool_input', {}).get('command', '')):
         return None
-    if tool not in ('Grep', 'Glob', 'Bash') or not indexed_root(data.get('cwd') or '.'):
+    if tool not in ('Grep', 'Glob', *SHELLS) or not indexed_root(data.get('cwd') or '.'):
         return None
     transcript = data.get('transcript_path') or ''
     if not Path(transcript).is_file() or codegraph_used(transcript):
@@ -185,6 +188,8 @@ def selftest():
     after_heredoc = transcript(('prompt', 'x'), ('Edit', {}),
                                ('Bash', {'command': "python3 - <<'EOF'\nprint(1)\nEOF\nengram save t c"}))
     assert stop_decision({'transcript_path': after_heredoc}) is None
+    ps_save = transcript(('prompt', 'x'), ('Edit', {}), ('PowerShell', {'command': 'engram save t c'}))
+    assert stop_decision({'transcript_path': ps_save}) is None
     cli_read = transcript(('prompt', 'x'), ('Edit', {}), ('Bash', {'command': 'engram search harness'}))
     assert stop_decision({'transcript_path': cli_read})['decision'] == 'block'
 
@@ -198,6 +203,11 @@ def selftest():
                              'tool_input': {'command': 'grep -rn foo .'}})
     assert pretool_decision({'tool_name': 'Bash', 'cwd': repo, 'transcript_path': fresh,
                              'tool_input': {'command': 'git status'}}) is None
+    # Claude Code on Windows runs commands through a separate PowerShell tool.
+    assert pretool_decision({'tool_name': 'PowerShell', 'cwd': repo, 'transcript_path': fresh,
+                             'tool_input': {'command': 'grep -rn foo .'}})
+    ps_used = transcript(('prompt', 'x'), ('PowerShell', {'command': 'codegraph query x'}))
+    assert pretool_decision({'tool_name': 'Grep', 'cwd': repo, 'transcript_path': ps_used}) is None
     for used in (('mcp__codegraph__codegraph_explore', {}), ('Bash', {'command': 'codegraph query x'}),
                  ('Bash', {'command': 'cd repo && codegraph query x'})):
         path = transcript(('prompt', 'x'), used)

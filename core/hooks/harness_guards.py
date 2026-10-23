@@ -205,6 +205,8 @@ def selftest():
     assert bash(heredoc) is None
     assert bash(heredoc.replace('body', 'Co-Authored-By: Claude <x@y>')) == 'deny'
     assert bash('git commit -m "Update stuff"') == 'deny'
+    ps = bash_decision({'tool_name': 'PowerShell', 'tool_input': {'command': 'git commit -m "Update stuff"'}})
+    assert ps['hookSpecificOutput']['permissionDecision'] == 'deny'  # Claude's Windows shell tool
     assert bash('git add -A && git commit -m "fix: handle nil"') is None
     assert bash('git commit --amend --no-edit') is None
     assert bash('python3 -m unittest t && git commit -m "fix: ok"') is None

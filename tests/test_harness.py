@@ -1,6 +1,7 @@
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -162,7 +163,36 @@ class Hooks(unittest.TestCase):
         return path
 
     def commands(self, entries):
-        return [h['command'] for entry in entries for h in entry['hooks']]
+        return [' '.join([h['command'], *h.get('args', [])]) for entry in entries for h in entry['hooks']]
+
+    def test_claude_hooks_run_without_a_shell(self):
+        # Exec form: Claude spawns the interpreter itself, so zsh, Git Bash and PowerShell behave alike.
+        (self.home / '.agent-harness').mkdir()
+        (self.home / '.agent-harness' / 'config.toml').write_text('python = "/usr/bin/python3"\n', encoding='utf-8', newline='\n')
+        self.install()
+        hooks = (self.home / '.claude' / 'hooks').as_posix()
+        data = json.loads((self.home / '.claude' / 'settings.json').read_text(encoding='utf-8'))
+        argv = [[h['command'], *h.get('args', [])] for entries in data['hooks'].values()
+                for entry in entries for h in entry['hooks']]
+        self.assertIn(['/usr/bin/python3', f'{hooks}/harness_guards.py', 'bash'], argv)
+        self.assertIn(['/usr/bin/python3', f'{hooks}/engram_auto_enroll.py'], argv)
+        self.assertTrue(all(cmd == '/usr/bin/python3' for cmd, *_ in argv), argv)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows interpreter choice')
+    def test_windows_hooks_use_the_py_launcher(self):
+        # py -3 survives Python upgrades; without it, the Python that ran the install.
+        self.install()
+        data = json.loads((self.home / '.claude' / 'settings.json').read_text(encoding='utf-8'))
+        hook = data['hooks']['Stop'][0]['hooks'][0]
+        expected = ['py', '-3'] if shutil.which('py') else [sys.executable.replace('\\', '/')]
+        self.assertEqual([hook['command'], *hook['args']][:len(expected)], expected)
+
+    def test_bash_guards_also_match_the_powershell_tool(self):
+        self.install()
+        data = json.loads((self.home / '.claude' / 'settings.json').read_text(encoding='utf-8'))
+        for entry in data['hooks']['PreToolUse']:
+            if self.commands([entry])[0].endswith(('harness_guards.py bash', 'enforce_memory_graph.py pretool')):
+                self.assertIn('PowerShell', entry['matcher'].split('|'), entry)
 
     def test_settings_merge_keeps_foreign_parts(self):
         (self.home / '.agent-harness').mkdir()

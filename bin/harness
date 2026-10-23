@@ -155,19 +155,21 @@ SELFTESTED = ('.claude/hooks/harness_guards.py', '.claude/hooks/enforce_memory_g
 
 
 def python_for(home):
-    """Per-PC interpreter: `python` in ~/.agent-harness/config.toml, else python3 on PATH."""
+    """Per-PC interpreter argv: `python` in ~/.agent-harness/config.toml, else py -3 on Windows, else python3."""
     config = home / '.agent-harness' / 'config.toml'
     if config.is_file():
         value = tomllib.loads(config.read_text(encoding='utf-8')).get('python')
         if value:
-            return value.replace('\\', '/')
-    return (shutil.which('python3') or sys.executable).replace('\\', '/')  # Git Bash eats backslashes
+            return [value.replace('\\', '/')]  # Git Bash eats backslashes
+    if os.name == 'nt':  # the launcher survives Python upgrades; python3 there may be the Store stub
+        return ['py', '-3'] if shutil.which('py') else [sys.executable.replace('\\', '/')]
+    return [shutil.which('python3') or sys.executable]
 
 
 def hook_key(entry):
     """`script mode` for an entry that runs a harness script; None for anyone else's hook."""
     for hook in entry.get('hooks', []):
-        found = re.search(r'/hooks/([\w.]+\.py)(?:\s+(\S+))?', hook.get('command', ''))
+        found = re.search(r'/hooks/([\w.]+\.py)(?:\s+(\S+))?', ' '.join([hook.get('command', ''), *hook.get('args', [])]))
         if found and found[1] in HARNESS_SCRIPTS:
             return f'{found[1]} {found[2] or ""}'.strip()
     return None
@@ -193,10 +195,15 @@ def hook_config(agent, home):
     path = home / HOOK_CONFIGS[agent]
     data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
     template = (HOOKS / f'{agent}.json').read_text(encoding='utf-8')
-    for key, value in {'python': python_for(home), 'claude_hooks': (home / '.claude/hooks').as_posix(),
+    python = python_for(home)
+    for key, value in {'python': ' '.join(python), 'claude_hooks': (home / '.claude/hooks').as_posix(),
                        'codex_hooks': (home / '.codex/hooks').as_posix()}.items():
         template = template.replace('{' + key + '}', value)
-    data['hooks'] = merge_hooks(data.get('hooks', {}), json.loads(template))
+    desired = json.loads(template)
+    if agent == 'claude':  # exec form: Claude spawns the interpreter itself, with no shell on any OS
+        for hook in (h for entries in desired.values() for entry in entries for h in entry['hooks']):
+            hook['command'], hook['args'] = python[0], python[1:] + hook['args']
+    data['hooks'] = merge_hooks(data.get('hooks', {}), desired)
     if agent == 'claude':
         data.setdefault('enabledPlugins', {}).update(PLUGINS['claude'])
         permissions = data.setdefault('permissions', {})
@@ -341,7 +348,7 @@ def outputs(home):
                                   ('copilot', 'hooks/copilot.json', '.copilot/hooks/agent-harness.json')):
         if present(agent, home):
             guard = (REPO / 'core' / source).read_text(encoding='utf-8')
-            guard = guard.replace('{python}', python_for(home)).replace('{claude_hooks}', (home / '.claude/hooks').as_posix())
+            guard = guard.replace('{python}', python_for(home)[0]).replace('{claude_hooks}', (home / '.claude/hooks').as_posix())
             files[target] = guard.encode()
     return files
 
@@ -408,7 +415,7 @@ def check(home):
     for rel in SELFTESTED:
         script = home / rel
         if script.is_file():
-            result = subprocess.run([python_for(home), str(script), 'selftest'],
+            result = subprocess.run([*python_for(home), str(script), 'selftest'],
                                     capture_output=True, encoding='utf-8', errors='replace', timeout=60)
             if result.returncode != 0:
                 problems.append(f'selftest failed: {script}')
