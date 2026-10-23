@@ -53,14 +53,20 @@ CREDENTIAL = re.compile(
 # Commands that use a key or name a path without printing secrets (git covers -m messages).
 USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'git', 'kubectl'}
 # git also prints files (diff, blame --contents, merge-file -p, archive, config -f), so only these
-# subcommands are exempt. ponytail: `git -c core.sshCommand=... fetch` is denied; use GIT_SSH_COMMAND.
+# subcommands are exempt, and not when they run a command or store a file in the repo.
 GIT_USES_KEYS = {'commit', 'tag', 'notes', 'push', 'fetch', 'pull', 'clone', 'remote', 'ls-remote', 'submodule'}
+GIT_VALUE_OPTIONS = {'-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
+                     '--attr-source', '--config-env'}
+GIT_RUNS_OR_STORES = re.compile(r'\s(?:--upload-pack|--receive-pack|-u|-\w*F|--file|--template)\b'
+                                r'|\ssubmodule\s+foreach\b')
+# Telling ssh which key to use names the key without printing it.
+SSH_KEY_OPTION = re.compile(r'(?i)(?:core\.sshCommand|GIT_SSH_COMMAND)[=\s]+ssh(?:\.exe)?\s+-i\s*\S+')
 
 
 def git_subcommand(words):
     i = 1
     while i < len(words) and words[i].startswith('-'):
-        i += 2 if words[i] in ('-C', '-c') else 1
+        i += 2 if words[i] in GIT_VALUE_OPTIONS else 1
     return words[i] if i < len(words) else ''
 KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|internet)-password\b.*'
                              r'\s-\w*[wg]\w*|dump-keychain\b.*\s-d)')
@@ -84,11 +90,13 @@ def reads_credentials(cmd):
     if KEYCHAIN_SECRET.search(cmd):
         return True
     for segment in re.split(r'[;&|\n]+', cmd):
+        segment = SSH_KEY_OPTION.sub(' ', segment)
         words = [w for w in segment.split() if not re.match(r'^\w+=', w)]
         while words and words[0] in ('sudo', 'command', 'env', 'exec'):
             words.pop(0)
         name = words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') if words else ''
-        uses_keys = name in USES_KEYS and (name != 'git' or git_subcommand(words) in GIT_USES_KEYS)
+        uses_keys = name in USES_KEYS and (name != 'git' or (
+            git_subcommand(words) in GIT_USES_KEYS and not GIT_RUNS_OR_STORES.search(segment)))
         if words and not uses_keys and CREDENTIAL.search(segment):
             return True
     return False
@@ -104,7 +112,7 @@ TMP_WORKTREE = re.compile(SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:\S+\s+)?)*
                           r'(?:(?:/tmp|/var/tmp|/private/tmp|/private/var/tmp|/(?:private/)?var/folders'
                           r'|~/AppData/Local/Temp|\$\{?(?:env:)?TE?MP\b\}?|%TE?MP%|[a-z]:/Windows/Temp)(?=[/\s;&|)]|$)'
                           # macOS $TMPDIR ends in /, so "$TMPDIR"wt (quotes dropped) is a path; mktemp -d uses it.
-                          r'|\$\{?TMPDIR|(?:\$\(\s*)?mktemp\b)', re.I)
+                          r'|\$\{?TMPDIR|(?:\$\(\s*)?mktemp(?=[\s;&|)]|$))', re.I)
 
 
 def decision(kind, reason):
@@ -295,7 +303,13 @@ def selftest():
                    'git diff /dev/null ~/.ssh/id_rsa', 'git blame --contents ~/.ssh/id_rsa README.md',
                    'git merge-file -p ~/.ssh/id_rsa /dev/null /dev/null', 'git archive --add-file=~/.ssh/id_rsa HEAD',
                    'git config -f ~/.aws/credentials --list', 'cat $APPDATA/gcloud/credentials.db',
-                   'cat ${APPDATA}/gnupg/pubring.kbx'):
+                   'cat ${APPDATA}/gnupg/pubring.kbx',
+                   # Second review: options that take a value, commands git runs, and keys stored with -F.
+                   'git --namespace commit diff ~/.ssh/id_rsa', 'git --git-dir commit diff ~/.ssh/id_rsa',
+                   "git fetch --upload-pack='cat ~/.ssh/id_rsa 1>&2' .", "git clone -u 'cat ~/.ssh/id_rsa >&2' . x",
+                   "git submodule foreach 'cat ~/.ssh/id_rsa'", 'git commit --allow-empty -F ~/.ssh/id_rsa',
+                   'git tag -a v1 -F ~/.ssh/id_rsa', 'git notes add -F ~/.aws/credentials',
+                   "GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa' git diff /dev/null ~/.ssh/id_rsa"):
         assert bash(secret) == 'deny', secret
     for fine in (r'ssh -i C:\Users\me\.ssh\id_ed25519 host uptime', r'ssh.exe -i ~\.ssh\id_rsa host',
                  r'Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub', r'git -C C:\Users\me\repo status',
@@ -303,7 +317,11 @@ def selftest():
                  'ls ~/Projects/users/x/.ssh', 'ls app/users/fixtures/.ssh', 'ls src/Views/Home/x/.ssh',
                  'cat $home/.aws/notes', 'git diff --no-index a.txt b.txt', 'git diff ~/.ssh/config',
                  'git -C ~/repo push origin main', 'git commit -m "docs: mention ~/.aws/config"',
-                 'ls ~/AppData/Roaming/gcloud-sdk-notes'):
+                 'ls ~/AppData/Roaming/gcloud-sdk-notes',
+                 # Telling git which key to use names the key without printing it.
+                 "git config --global core.sshCommand 'ssh -i ~/.ssh/id_ed25519'",
+                 'git -c core.sshCommand="ssh -i ~/.ssh/id_rsa" fetch origin',
+                 "GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa' git fetch", 'git push -u origin main'):
         assert bash(fine) != 'deny', fine
     for temp in (r'git worktree add $env:TEMP\wt feature', r'git worktree add %TEMP%\wt',
                  r'git worktree add C:\Users\me\AppData\Local\Temp\wt', r'git worktree add "C:\Windows\Temp\wt"',
@@ -316,6 +334,7 @@ def selftest():
                  'git worktree add "$TMPDIR"wt', 'git worktree add $(mktemp -d)/wt', 'git worktree add $TEMP/wt'):
         assert bash(temp) == 'deny', temp
     assert bash(r'git worktree add ..\repo-worktrees\x') is None
+    assert bash('git worktree add mktemp-notes') is None
 
     tmp = Path(tempfile.mkdtemp())
     cfg = HOME / '.claude' / 'settings.json'
