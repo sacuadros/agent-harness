@@ -452,14 +452,22 @@ class Doctor(unittest.TestCase):
         out = self.doctor(PATH='/a:/usr/bin:/a:/bin')
         self.assertEqual(out.count('duplicate PATH entry: /a'), 1)
 
-    def test_engram_plugin_versions_differ(self):
+    def test_engram_plugins_compared_with_their_own_marketplace(self):
+        # Claude and Codex ship separate Engram plugins with their own version numbers.
         plugins = self.home / '.claude' / 'plugins'
-        plugins.mkdir(parents=True)
+        (plugins / 'marketplaces' / 'engram' / '.claude-plugin').mkdir(parents=True)
         (plugins / 'installed_plugins.json').write_text(json.dumps(
             {'plugins': {'engram@engram': [{'version': '0.1.0'}]}}))
+        (plugins / 'marketplaces' / 'engram' / '.claude-plugin' / 'marketplace.json').write_text(json.dumps(
+            {'plugins': [{'name': 'engram', 'version': '0.1.16'}]}))
         (self.home / '.codex' / 'plugins' / 'cache' / 'engram' / 'engram' / '0.1.5').mkdir(parents=True)
+        manifest = self.home / '.codex/.tmp/marketplaces/engram/plugin/codex/.codex-plugin/plugin.json'
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({'version': '0.1.5'}))
         out = self.doctor()
-        self.assertIn('engram plugins differ: claude 0.1.0, codex 0.1.5', out)
+        self.assertIn('engram claude plugin outdated: 0.1.0 -> 0.1.16', out)
+        self.assertNotIn('codex plugin outdated', out)
+        self.assertNotIn('plugins differ', out)
 
     def test_vscode_setting_pointing_to_a_missing_file(self):
         settings = self.home / 'Library/Application Support/Code/User/settings.json'

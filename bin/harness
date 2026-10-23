@@ -464,6 +464,20 @@ def engram_versions(home):
     return binary, claude, codex, update
 
 
+def marketplace_version(manifest):
+    """Engram plugin version a marketplace manifest offers (Claude lists plugins; Codex has one)."""
+    if not manifest.is_file():
+        return None
+    try:
+        data = json.loads(manifest.read_text())
+    except ValueError:
+        return None
+    for plugin in data.get('plugins', [data]):
+        if plugin.get('name', 'engram') == 'engram':
+            return plugin.get('version')
+    return None
+
+
 def doctor(home):
     """Report leftovers and version drift; never changes anything."""
     findings = []
@@ -489,8 +503,14 @@ def doctor(home):
                  for entry in duplicates]
     binary, claude, codex, update = engram_versions(home)
     print(f'engram: binary {binary or "not found"}, claude plugin {claude or "-"}, codex plugin {codex or "-"}')
-    if claude and codex and claude != codex:
-        findings.append(f'engram plugins differ: claude {claude}, codex {codex}')
+    # Claude and Codex ship separate Engram plugins; compare each with its own marketplace.
+    for agent, installed, latest, fix in (
+            ('claude', claude, marketplace_version(home / '.claude/plugins/marketplaces/engram/.claude-plugin/marketplace.json'),
+             'claude plugin update engram@engram'),
+            ('codex', codex, marketplace_version(home / '.codex/.tmp/marketplaces/engram/plugin/codex/.codex-plugin/plugin.json'),
+             'codex plugin marketplace upgrade engram && codex plugin add engram@engram')):
+        if installed and latest and installed != latest:
+            findings.append(f'engram {agent} plugin outdated: {installed} -> {latest} ({fix})')
     if update:
         findings.append(f'engram update available: {update} (brew upgrade engram)')
     for finding in findings:
