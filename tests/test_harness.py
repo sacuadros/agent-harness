@@ -424,10 +424,44 @@ class NewPC(unittest.TestCase):
         self.assertIn('needs Python 3.11 or newer', result.stderr)
 
 
+class Portability(unittest.TestCase):
+    """Windows defaults to cp1252; an ASCII locale reproduces the same failures on Unix."""
+    ASCII = {**os.environ, 'LC_ALL': 'C', 'LANG': 'C', 'PYTHONUTF8': '0', 'PYTHONIOENCODING': ''}
+
+    def ascii_run(self, *args):
+        return subprocess.run([sys.executable, '-X', 'utf8=0', *args], capture_output=True, env=self.ASCII)
+
+    def test_harness_commands_work_without_a_utf8_locale(self):
+        home = Path(tempfile.mkdtemp())
+        for folder in ('.config/opencode', '.pi/agent', '.copilot'):
+            (home / folder).mkdir(parents=True)
+        render = self.ascii_run(str(HARNESS), 'render', 'claude')
+        self.assertEqual(render.returncode, 0, render.stderr)
+        self.assertEqual(render.stdout.decode('utf-8'), harness('render', 'claude'))
+        for command in (['install', '--home', str(home)], ['check', '--home', str(home)],
+                        ['doctor', '--home', str(home)]):
+            result = self.ascii_run(str(HARNESS), *command)
+            self.assertEqual(result.returncode, 0, (command, result.stdout, result.stderr))
+        self.assertEqual((home / '.claude' / 'CLAUDE.md').read_text(encoding='utf-8'), harness('render', 'claude'))
+
+    def test_hook_selftests_work_without_a_utf8_locale(self):
+        for script in ('harness_guards.py', 'enforce_memory_graph.py'):
+            result = self.ascii_run(str(REPO / 'core' / 'hooks' / script), 'selftest')
+            self.assertEqual(result.returncode, 0, (script, result.stderr))
+
+    def test_rendered_hook_paths_use_forward_slashes(self):
+        # hook_key() matches `/hooks/`, and Git Bash would eat Windows backslashes.
+        home = Path(tempfile.mkdtemp())
+        (home / '.copilot').mkdir()
+        harness('install', '--home', str(home))
+        for config in ('.claude/settings.json', '.codex/hooks.json', '.copilot/hooks/agent-harness.json'):
+            self.assertNotIn('\\', (home / config).read_text(encoding='utf-8'), config)
+
+
 class Doctor(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
-        self.env = {**os.environ, 'PATH': '/usr/bin:/bin'}
+        self.env = {**os.environ, 'PATH': os.pathsep.join(['/usr/bin', '/bin'])}
 
     def doctor(self, **env):
         result = subprocess.run([sys.executable, str(HARNESS), 'doctor', '--home', str(self.home)],
@@ -449,7 +483,7 @@ class Doctor(unittest.TestCase):
         self.assertNotIn(': init', out)
 
     def test_duplicate_path_entries(self):
-        out = self.doctor(PATH='/a:/usr/bin:/a:/bin')
+        out = self.doctor(PATH=os.pathsep.join(['/a', '/usr/bin', '/a', '/bin']))
         self.assertEqual(out.count('duplicate PATH entry: /a'), 1)
 
     def test_engram_plugins_compared_with_their_own_marketplace(self):

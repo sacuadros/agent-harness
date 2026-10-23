@@ -27,8 +27,8 @@ INSTRUCTIONS = REPO / 'core' / 'instructions'
 SKILLS = REPO / 'core' / 'skills'
 SUBAGENTS = REPO / 'core' / 'agents'
 HOOKS = REPO / 'core' / 'hooks'
-PLUGINS = tomllib.loads((REPO / 'core' / 'plugins.toml').read_text())
-PERMISSIONS = tomllib.loads((REPO / 'core' / 'permissions.toml').read_text())
+PLUGINS = tomllib.loads((REPO / 'core' / 'plugins.toml').read_text(encoding='utf-8'))
+PERMISSIONS = tomllib.loads((REPO / 'core' / 'permissions.toml').read_text(encoding='utf-8'))
 # Hook scripts each agent's hook config runs (Codex also calls the Claude copies).
 HOOK_SCRIPTS = {
     '.claude/hooks': ('harness_guards.py', 'enforce_memory_graph.py', 'engram_auto_enroll.py'),
@@ -71,7 +71,7 @@ def sections(agent):
             continue
         chosen[parts[0]] = f
     for stem, f in sorted(chosen.items()):
-        yield stem.split('-', 1)[1], f.read_text()
+        yield stem.split('-', 1)[1], f.read_text(encoding='utf-8')
 
 
 def render(agent):
@@ -158,10 +158,10 @@ def python_for(home):
     """Per-PC interpreter: `python` in ~/.agent-harness/config.toml, else python3 on PATH."""
     config = home / '.agent-harness' / 'config.toml'
     if config.is_file():
-        value = tomllib.loads(config.read_text()).get('python')
+        value = tomllib.loads(config.read_text(encoding='utf-8')).get('python')
         if value:
-            return value
-    return shutil.which('python3') or sys.executable
+            return value.replace('\\', '/')
+    return (shutil.which('python3') or sys.executable).replace('\\', '/')  # Git Bash eats backslashes
 
 
 def hook_key(entry):
@@ -191,10 +191,10 @@ def merge_hooks(current, desired):
 
 def hook_config(agent, home):
     path = home / HOOK_CONFIGS[agent]
-    data = json.loads(path.read_text()) if path.is_file() else {}
-    template = (HOOKS / f'{agent}.json').read_text()
-    for key, value in {'python': python_for(home), 'claude_hooks': str(home / '.claude/hooks'),
-                       'codex_hooks': str(home / '.codex/hooks')}.items():
+    data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    template = (HOOKS / f'{agent}.json').read_text(encoding='utf-8')
+    for key, value in {'python': python_for(home), 'claude_hooks': (home / '.claude/hooks').as_posix(),
+                       'codex_hooks': (home / '.codex/hooks').as_posix()}.items():
         template = template.replace('{' + key + '}', value)
     data['hooks'] = merge_hooks(data.get('hooks', {}), json.loads(template))
     if agent == 'claude':
@@ -211,7 +211,7 @@ CODEX_CONFIG = '.codex/config.toml'
 
 def codex_config(home):
     """Flip `enabled` inside each managed plugin table; every other byte stays as written."""
-    text = (home / CODEX_CONFIG).read_text()
+    text = (home / CODEX_CONFIG).read_text(encoding='utf-8')
     for plugin, enabled in PLUGINS['codex'].items():
         table = re.escape(f'[plugins."{plugin}"]')
         text = re.sub(rf'(^{table}\n(?:(?!\[).*\n)*?)enabled = (?:true|false)\n',
@@ -232,7 +232,7 @@ PI_SETTINGS = '.pi/agent/settings.json'
 
 def pi_settings(home):
     """Point Pi at the harness skills in ~/.claude/skills; keep everything else."""
-    data = json.loads((home / PI_SETTINGS).read_text())
+    data = json.loads((home / PI_SETTINGS).read_text(encoding='utf-8'))
     skills = data.setdefault('skills', [])
     if '~/.claude/skills' not in skills:
         skills.append('~/.claude/skills')
@@ -244,7 +244,7 @@ OPENCODE_CONFIG = '.config/opencode/opencode.json'
 
 def opencode_config(home):
     """Add the harness approval prompts and let the orchestrator call the harness subagents."""
-    data = json.loads((home / OPENCODE_CONFIG).read_text())
+    data = json.loads((home / OPENCODE_CONFIG).read_text(encoding='utf-8'))
     permission = data.setdefault('permission', {})
     if isinstance(permission, dict):
         bash = permission.setdefault('bash', {})
@@ -274,8 +274,8 @@ RULES_END = '# <<< agent-harness\n'
 def codex_rules(home):
     """Keep the harness rules in one marked block; leave rules Codex added on its own alone."""
     path = home / RULES
-    current = path.read_text() if path.is_file() else ''
-    block = (HOOKS / 'codex.rules').read_text()
+    current = path.read_text(encoding='utf-8') if path.is_file() else ''
+    block = (HOOKS / 'codex.rules').read_text(encoding='utf-8')
     if RULES_BEGIN in current and RULES_END in current:
         before, rest = current.split(RULES_BEGIN, 1)
         after = rest.split(RULES_END, 1)[1]
@@ -332,7 +332,7 @@ def outputs(home):
         except ValueError:
             pass  # unparseable config: never overwrite it; `check` reports it as invalid
     for f in sorted(SUBAGENTS.glob('*.toml')):
-        source = tomllib.loads(f.read_text())
+        source = tomllib.loads(f.read_text(encoding='utf-8'))
         for agent, (path, fmt) in SUBAGENT_FORMATS.items():
             if present(agent, home):
                 files[path.format(source['name'])] = fmt(source, source[agent]).encode()
@@ -340,13 +340,13 @@ def outputs(home):
                                   ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts'),
                                   ('copilot', 'hooks/copilot.json', '.copilot/hooks/agent-harness.json')):
         if present(agent, home):
-            guard = (REPO / 'core' / source).read_text()
-            guard = guard.replace('{python}', python_for(home)).replace('{claude_hooks}', str(home / '.claude/hooks'))
+            guard = (REPO / 'core' / source).read_text(encoding='utf-8')
+            guard = guard.replace('{python}', python_for(home)).replace('{claude_hooks}', (home / '.claude/hooks').as_posix())
             files[target] = guard.encode()
     return files
 
 
-RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text().splitlines()
+RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text(encoding='utf-8').splitlines()
            if line.strip() and not line.startswith('#')]
 
 
@@ -409,14 +409,14 @@ def check(home):
         script = home / rel
         if script.is_file():
             result = subprocess.run([python_for(home), str(script), 'selftest'],
-                                    capture_output=True, text=True, timeout=60)
+                                    capture_output=True, encoding='utf-8', errors='replace', timeout=60)
             if result.returncode != 0:
                 problems.append(f'selftest failed: {script}')
     for rel, parse in CONFIGS.items():
         path = home / rel
         if path.is_file():
             try:
-                data = parse(path.read_text())
+                data = parse(path.read_text(encoding='utf-8'))
             except ValueError as error:  # JSONDecodeError and TOMLDecodeError are ValueErrors
                 problems.append(f'invalid: {path}: {error}')
                 continue
@@ -446,16 +446,16 @@ def engram_versions(home):
     claude = codex = None
     installed = home / '.claude/plugins/installed_plugins.json'
     if installed.is_file():
-        entries = json.loads(installed.read_text()).get('plugins', {}).get('engram@engram') or [{}]
+        entries = json.loads(installed.read_text(encoding='utf-8')).get('plugins', {}).get('engram@engram') or [{}]
         claude = entries[0].get('version')
     cached = sorted(d.name for d in (home / '.codex/plugins/cache/engram/engram').glob('*') if d.is_dir())
     codex = cached[-1] if cached else None
     binary = update = None
     if shutil.which('engram'):
-        out = subprocess.run(['engram', 'version'], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(['engram', 'version'], capture_output=True, encoding='utf-8', errors='replace', timeout=30)
         binary = (re.search(r'engram v?(\d\S*)', out.stdout) or [None, None])[1]
     if binary and shutil.which('brew'):  # engram prints its own update notice only to a terminal
-        out = subprocess.run(['brew', 'info', '--json=v2', 'engram'], capture_output=True, text=True, timeout=60)
+        out = subprocess.run(['brew', 'info', '--json=v2', 'engram'], capture_output=True, encoding='utf-8', errors='replace', timeout=60)
         try:
             stable = json.loads(out.stdout)['formulae'][0]['versions']['stable']
             update = f'{binary} -> {stable}' if stable != binary else None
@@ -469,7 +469,7 @@ def marketplace_version(manifest):
     if not manifest.is_file():
         return None
     try:
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding='utf-8'))
     except ValueError:
         return None
     for plugin in data.get('plugins', [data]):
@@ -483,19 +483,19 @@ def doctor(home):
     findings = []
     settings = home / '.claude/settings.json'
     if settings.is_file():
-        overrides = json.loads(settings.read_text()).get('skillOverrides', {})
+        overrides = json.loads(settings.read_text(encoding='utf-8')).get('skillOverrides', {})
         known = installed_skill_names(home)
         findings += [f'orphan skill override: {name} (remove it from skillOverrides in {settings})'
                      for name in overrides if name not in known]
     vscode = home / (vscode_user(home) or VSCODE_USER[0]) / 'settings.json'
     if vscode.is_file():  # JSONC with comments: read the one setting with a regex, never rewrite it
-        block = re.search(r'"github\.copilot\.chat\.instructions"\s*:\s*\[(.*?)\]', vscode.read_text(), re.S)
+        block = re.search(r'"github\.copilot\.chat\.instructions"\s*:\s*\[(.*?)\]', vscode.read_text(encoding='utf-8'), re.S)
         for path in re.findall(r'~/[^\s",]+', block[1] if block else ''):
             if not (home / path[2:]).exists():
                 findings.append(f'github.copilot.chat.instructions points to a missing file: {path} '
                                 f'(remove that entry from {vscode})')
     seen, duplicates = set(), []
-    for entry in os.environ.get('PATH', '').split(':'):
+    for entry in os.environ.get('PATH', '').split(os.pathsep):
         if entry in seen and entry not in duplicates:
             duplicates.append(entry)
         seen.add(entry)
@@ -530,6 +530,8 @@ def main(argv=None):
     sub.add_parser('check').add_argument('--home', type=Path, default=Path.home())
     sub.add_parser('doctor').add_argument('--home', type=Path, default=Path.home())
     args = parser.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding='utf-8')  # Windows consoles default to cp1252
     if args.command == 'render':
         sys.stdout.write(render(args.agent))
     elif args.command == 'install':

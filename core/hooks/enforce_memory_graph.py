@@ -29,7 +29,7 @@ def entries(path):
         from compression import zstd  # Python 3.14+
         opener = zstd.open
     try:
-        with opener(path, 'rt') as f:
+        with opener(path, 'rt', encoding='utf-8') as f:
             for line in f:
                 try:
                     yield json.loads(line)
@@ -149,17 +149,18 @@ def selftest():
     import tempfile
 
     def transcript(*items):
-        f = tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False)
+        # Real transcripts are raw UTF-8 (accents, arrows), not ASCII-escaped JSON.
+        f = tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False, encoding='utf-8')
         for kind, payload in items:
             if kind == 'prompt':
-                f.write(json.dumps({'type': 'user', 'message': {'content': payload}}) + '\n')
+                f.write(json.dumps({'type': 'user', 'message': {'content': payload}}, ensure_ascii=False) + '\n')
             else:
                 f.write(json.dumps({'type': 'assistant', 'message': {'content': [
-                    {'type': 'tool_use', 'name': kind, 'input': payload}]}}) + '\n')
+                    {'type': 'tool_use', 'name': kind, 'input': payload}]}}, ensure_ascii=False) + '\n')
         f.close()
         return f.name
 
-    edit = transcript(('prompt', 'x'), ('Edit', {}))
+    edit = transcript(('prompt', 'corrige la acción → ñandú'), ('Edit', {}))
     assert stop_decision({'transcript_path': edit})['decision'] == 'block'
     assert stop_decision({'transcript_path': edit, 'stop_hook_active': True}) is None
     saved = transcript(('prompt', 'x'), ('Edit', {}), ('mcp__plugin_engram_engram__mem_save', {}))
@@ -216,10 +217,10 @@ def selftest():
             'type': 'item_completed', 'item': item}}) + '\n' for item in items)
         if zst:
             from compression import zstd
-            with zstd.open(f.name, 'wt') as out:
+            with zstd.open(f.name, 'wt', encoding='utf-8') as out:
                 out.write(lines)
         else:
-            Path(f.name).write_text(lines)
+            Path(f.name).write_text(lines, encoding='utf-8')
         return f.name
 
     prompt = {'type': 'UserMessage'}
@@ -245,7 +246,7 @@ def selftest():
     home = Path(tempfile.mkdtemp())
     (home / '.codegraph').mkdir()
     (home / 'scratch').mkdir()
-    os.environ['HOME'] = str(home)
+    os.environ['HOME'] = os.environ['USERPROFILE'] = str(home)  # Path.home() reads USERPROFILE on Windows
     assert pretool_decision({'tool_name': 'Grep', 'cwd': str(home / 'scratch'),
                              'transcript_path': fresh}) is None
     print('enforce_memory_graph selftest: ok' + ('' if has_zstd else ' (skipped zstd cases: needs Python 3.14+)'))
@@ -256,7 +257,7 @@ def main():
     if mode == 'selftest':
         return selftest()
     try:
-        data = json.load(sys.stdin)
+        data = json.loads(sys.stdin.buffer.read())  # bytes: UTF-8 whatever the locale
         result = {'stop': stop_decision, 'pretool': pretool_decision}[mode](data)
     except Exception:
         return  # fail open: never wedge a session on a hook bug

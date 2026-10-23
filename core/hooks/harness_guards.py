@@ -323,7 +323,7 @@ def main():
     if mode == 'selftest':
         return selftest()
     try:
-        data = json.load(sys.stdin)
+        data = json.loads(sys.stdin.buffer.read())  # bytes: UTF-8 whatever the locale
         if mode == 'bash' and '--copilot' in sys.argv:
             result = copilot_output(data)
         elif mode == 'backup' and ('toolArgs' in data or 'toolName' in data):
@@ -335,7 +335,7 @@ def main():
     except Exception:
         return  # fail open: never wedge a session on a hook bug
     if result:
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(result))  # ASCII-escaped, so a cp1252 stdout cannot fail
 
 
 if __name__ == '__main__':
