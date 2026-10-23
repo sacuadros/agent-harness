@@ -2,13 +2,13 @@
 
 - The primary {{agent}} thread is the orchestrator and owns scope, decisions, task boundaries, user communication, approvals, Git delivery, and the final user-facing evidence report.
 - Keep bounded and sequential work in the primary thread. Do not delegate trivial changes or work whose coordination cost exceeds its execution cost.
-- Proactively delegate without waiting for the user when delegation materially improves speed, isolation, specialization, or main-thread context quality.
-- Delegation is mandatory, not optional, when any trigger below applies, unless tool availability, permissions, or a shared-state dependency makes safe delegation impossible:
-  - two or more genuinely independent read-only investigations where each lane is non-trivial or likely to require multiple tool calls;
-  - independent documentation research, triage, summarization, or long/noisy tests, logs, and scans that would otherwise pollute the primary context;
-  - a fresh review required by the selected Standard or Critical assurance level;
-  - two or more implementation units with exclusive, non-overlapping file or module ownership.
-- Before non-trivial work, size it with Slice Flow. Work inline by default; when a delegation trigger above applies, immediately spawn the smallest useful set, normally one per independent lane, and continue useful local work while they run. Do not reinterpret an applicable trigger as a suggestion.
+- Work inline by default. Delegate only for one of these named reasons, and name the reason in one line when you do; once a reason applies, delegating is mandatory unless tool availability, permissions, or shared state make it unsafe:
+  - **Exploration**: answering needs more than about 5 sequential lookups in material you will not edit. One read-only explorer returns at most about 2k tokens with `path:line` evidence, and you spot-check one claim.
+  - **Parallel writers**: two or more independent units with disjoint files, each above about 100 changed lines. Units of about 100 changed lines or less stay inline.
+  - **Noisy checks**: long or noisy tests, logs, or scans whose output would flood the primary context.
+  - **Independent review**: only when the Risk line names an item (Critical assurance).
+  - **Context backstop**: past about 150k tokens of context, hand the next bounded unit to a subagent.
+- When a reason applies, spawn the smallest useful set, normally one per independent lane, and continue useful local work while they run.
 - Prefer parallel read-only exploration, documentation research, test execution, triage, and review. For implementation, assign one writer per file or ownership boundary and never allow overlapping edits.
 - Route by responsibility only after delegation is warranted. Keep small or sequential work in the primary agent; do not delegate merely to select a cheaper model.
 - Use `implementation-worker` (GPT-6.1 Sol, medium) for bounded implementation with exclusive file ownership; `test-runner` (GPT-6 Luna, high) for prescribed long or noisy checks and factual result classification; `independent-reviewer` (GPT-6.1 Sol, high) for the independent review required by assurance. Do not send ambiguous debugging or critical judgment to the test runner just because it runs tests.

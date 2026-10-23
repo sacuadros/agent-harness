@@ -235,6 +235,23 @@ class Hooks(unittest.TestCase):
         self.assertIn(f'selftest failed: {broken}', result.stdout)
 
 
+class Delegation(unittest.TestCase):
+    REASONS = ('**Exploration**', 'about 5 sequential lookups', '**Parallel writers**',
+               'about 100 changed lines', '**Noisy checks**', '**Independent review**',
+               'Risk line names an item', '**Context backstop**', 'about 150k tokens')
+    GONE = ('Delegation is mandatory, not optional, when any trigger below applies',
+            'Proactively delegate', 'required by the selected Standard or Critical assurance level')
+
+    def test_inline_by_default_with_named_reasons(self):
+        for agent in ('claude', 'codex'):
+            text = harness('render', agent)
+            for phrase in self.REASONS:
+                self.assertTrue(phrase in text, f'{agent}: missing {phrase!r}')
+            self.assertTrue('name the reason in one line' in text, f'{agent}: missing reason rule')
+            for phrase in self.GONE:
+                self.assertFalse(phrase in text, f'{agent}: still has {phrase!r}')
+
+
 class Secrets(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
