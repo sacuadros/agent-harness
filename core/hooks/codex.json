@@ -1,0 +1,68 @@
+{
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python} {codex_hooks}/engram_auto_enroll.py",
+          "async": true,
+          "timeout": 120
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python} {claude_hooks}/enforce_memory_graph.py stop",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "SessionStart": [
+    {
+      "matcher": "startup|resume|clear",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python} {codex_hooks}/engram_auto_enroll.py",
+          "async": true,
+          "timeout": 120
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python} {claude_hooks}/harness_guards.py bash --codex",
+          "timeout": 5
+        }
+      ]
+    },
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python} {claude_hooks}/enforce_memory_graph.py pretool",
+          "timeout": 5
+        }
+      ]
+    },
+    {
+      "matcher": "apply_patch",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python} {claude_hooks}/harness_guards.py backup",
+          "timeout": 5
+        }
+      ]
+    }
+  ]
+}

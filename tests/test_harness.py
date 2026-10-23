@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import tempfile
@@ -132,6 +133,99 @@ class Subagents(unittest.TestCase):
                 for old, new in self.FIXES.items():
                     expected = expected.replace(old, new)
                 self.assertEqual((self.home / rel).read_text(), expected, rel)
+
+
+class Hooks(unittest.TestCase):
+    SCRIPTS = ('harness_guards.py', 'enforce_memory_graph.py', 'engram_auto_enroll.py')
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def install(self):
+        harness('install', '--home', str(self.home))
+
+    def test_scripts_are_installed(self):
+        self.install()
+        for script in self.SCRIPTS:
+            self.assertEqual((self.home / '.claude' / 'hooks' / script).read_bytes(),
+                             (REPO / 'core' / 'hooks' / script).read_bytes())
+        self.assertEqual(sorted(p.name for p in (self.home / '.codex' / 'hooks').iterdir()),
+                         ['engram_auto_enroll.py'])
+
+    def write_json(self, rel, data):
+        path = self.home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+        return path
+
+    def commands(self, entries):
+        return [h['command'] for entry in entries for h in entry['hooks']]
+
+    def test_settings_merge_keeps_foreign_parts(self):
+        (self.home / '.agent-harness').mkdir()
+        (self.home / '.agent-harness' / 'config.toml').write_text('python = "/usr/bin/python3"\n')
+        foreign = {'hooks': [{'type': 'command', 'command': 'codegraph prompt-hook'}]}
+        settings = self.write_json('.claude/settings.json', {
+            'env': {'X': '1'},
+            'hooks': {
+                'UserPromptSubmit': [foreign],
+                'Stop': [{'hooks': [{'type': 'command', 'timeout': 5,
+                                     'command': 'python3 /old/.claude/hooks/enforce_memory_graph.py stop'}]}],
+            }})
+        self.install()
+        data = json.loads(settings.read_text())
+        self.assertEqual(data['env'], {'X': '1'})
+        self.assertEqual(data['hooks']['UserPromptSubmit'], [foreign])
+        hooks = str(self.home / '.claude' / 'hooks')
+        self.assertEqual(self.commands(data['hooks']['Stop']), [
+            f'/usr/bin/python3 {hooks}/enforce_memory_graph.py stop',
+            f'/usr/bin/python3 {hooks}/engram_auto_enroll.py'])
+        self.assertIn(f'/usr/bin/python3 {hooks}/harness_guards.py bash',
+                      self.commands(data['hooks']['PreToolUse']))
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_codex_hooks_keep_foreign_entries_at_their_index(self):
+        foreign = {'hooks': [{'type': 'command', 'command': 'impeccable hook', 'timeout': 30}]}
+        old = lambda cmd: {'hooks': [{'type': 'command', 'command': cmd}]}
+        hooks_json = self.write_json('.codex/hooks.json', {'hooks': {
+            'PostToolUse': [foreign],
+            'Stop': [old('python3 /x/.codex/hooks/engram_auto_enroll.py'), foreign,
+                     old('python3 /x/.claude/hooks/enforce_memory_graph.py stop')],
+        }})
+        self.install()
+        hooks = json.loads(hooks_json.read_text())['hooks']
+        self.assertEqual(hooks['PostToolUse'], [foreign])
+        stop = hooks['Stop']
+        self.assertEqual(len(stop), 3)
+        self.assertEqual(stop[1], foreign)
+        self.assertTrue(self.commands([stop[0]])[0].endswith('/.codex/hooks/engram_auto_enroll.py'))
+        self.assertTrue(self.commands([stop[2]])[0].endswith('/.claude/hooks/enforce_memory_graph.py stop'))
+        self.assertEqual(len(hooks['PreToolUse']), 3)
+
+    def test_rules_block_keeps_codex_added_rules(self):
+        block = (REPO / 'core' / 'hooks' / 'codex.rules').read_text()
+        rules = self.home / '.codex' / 'rules' / 'default.rules'
+        rules.parent.mkdir(parents=True)
+        mine = 'prefix_rule(pattern=["npm", "run", "build"], decision="allow")\n'
+        old_copy = next(line for line in block.splitlines() if line.startswith('prefix_rule'))
+        rules.write_text(mine + old_copy + '\n')
+        self.install()
+        text = rules.read_text()
+        self.assertTrue(text.startswith(mine))
+        self.assertEqual(text.count(old_copy), 1)
+        self.assertEqual(text.count('# >>> agent-harness'), 1)
+        added = 'prefix_rule(pattern=["make"], decision="allow")\n'
+        rules.write_text(text + added)
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+        self.assertTrue(rules.read_text().endswith(added))
+
+    def test_failing_selftest_fails_check(self):
+        self.install()
+        broken = self.home / '.claude' / 'hooks' / 'harness_guards.py'
+        broken.write_text('import sys\nsys.exit(1)\n')
+        result = run('check', '--home', str(self.home))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'selftest failed: {broken}', result.stdout)
 
 
 class Check(unittest.TestCase):

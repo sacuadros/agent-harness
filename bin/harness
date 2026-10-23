@@ -7,7 +7,9 @@
 """
 import argparse
 import json
+import re
 import shutil
+import subprocess
 import sys
 import time
 import tomllib
@@ -17,6 +19,12 @@ REPO = Path(__file__).resolve().parent.parent
 INSTRUCTIONS = REPO / 'core' / 'instructions'
 SKILLS = REPO / 'core' / 'skills'
 SUBAGENTS = REPO / 'core' / 'agents'
+HOOKS = REPO / 'core' / 'hooks'
+# Hook scripts each agent's hook config runs (Codex also calls the Claude copies).
+HOOK_SCRIPTS = {
+    '.claude/hooks': ('harness_guards.py', 'enforce_memory_graph.py', 'engram_auto_enroll.py'),
+    '.codex/hooks': ('engram_auto_enroll.py',),
+}
 
 AGENTS = {
     'claude': {'path': '.claude/CLAUDE.md', 'skills': '.claude/skills', 'marker': 'claude-native',
@@ -101,13 +109,93 @@ def fill(text, spec):
     return text
 
 
-def outputs():
+HOOK_CONFIGS = {'claude': '.claude/settings.json', 'codex': '.codex/hooks.json'}
+HARNESS_SCRIPTS = {s for scripts in HOOK_SCRIPTS.values() for s in scripts}
+SELFTESTED = ('.claude/hooks/harness_guards.py', '.claude/hooks/enforce_memory_graph.py')
+
+
+def python_for(home):
+    """Per-PC interpreter: `python` in ~/.agent-harness/config.toml, else python3 on PATH."""
+    config = home / '.agent-harness' / 'config.toml'
+    if config.is_file():
+        value = tomllib.loads(config.read_text()).get('python')
+        if value:
+            return value
+    return shutil.which('python3') or sys.executable
+
+
+def hook_key(entry):
+    """`script mode` for an entry that runs a harness script; None for anyone else's hook."""
+    for hook in entry.get('hooks', []):
+        found = re.search(r'/hooks/([\w.]+\.py)(?:\s+(\S+))?', hook.get('command', ''))
+        if found and found[1] in HARNESS_SCRIPTS:
+            return f'{found[1]} {found[2] or ""}'.strip()
+    return None
+
+
+def merge_hooks(current, desired):
+    """Replace harness entries in place and append missing ones, so other entries keep their index."""
+    merged = {}
+    for event in [*current, *(e for e in desired if e not in current)]:
+        wanted = {hook_key(entry): entry for entry in desired.get(event, [])}
+        entries = []
+        for entry in current.get(event, []):
+            key = hook_key(entry)
+            if key is None:
+                entries.append(entry)
+            elif key in wanted:
+                entries.append(wanted.pop(key))
+        merged[event] = entries + list(wanted.values())
+    return merged
+
+
+def hook_config(agent, home):
+    path = home / HOOK_CONFIGS[agent]
+    data = json.loads(path.read_text()) if path.is_file() else {}
+    template = (HOOKS / f'{agent}.json').read_text()
+    for key, value in {'python': python_for(home), 'claude_hooks': str(home / '.claude/hooks'),
+                       'codex_hooks': str(home / '.codex/hooks')}.items():
+        template = template.replace('{' + key + '}', value)
+    data['hooks'] = merge_hooks(data.get('hooks', {}), json.loads(template))
+    return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
+
+
+RULES = '.codex/rules/default.rules'
+RULES_BEGIN = '# >>> agent-harness: managed by bin/harness, edit core/hooks/codex.rules\n'
+RULES_END = '# <<< agent-harness\n'
+
+
+def codex_rules(home):
+    """Keep the harness rules in one marked block; leave rules Codex added on its own alone."""
+    path = home / RULES
+    current = path.read_text() if path.is_file() else ''
+    block = (HOOKS / 'codex.rules').read_text()
+    if RULES_BEGIN in current and RULES_END in current:
+        before, rest = current.split(RULES_BEGIN, 1)
+        after = rest.split(RULES_END, 1)[1]
+    else:  # first install: drop unmarked copies of harness lines left by earlier hand edits
+        ours = {line for line in block.splitlines() if line.strip()}
+        before = ''.join(l for l in current.splitlines(True) if l.rstrip('\n') not in ours).rstrip('\n')
+        before, after = (before + '\n\n' if before else ''), ''
+    return (before + RULES_BEGIN + block + RULES_END + after).encode()
+
+
+def outputs(home):
     """Every file the harness manages, as home-relative path -> bytes."""
     files = {}
     for agent, spec in AGENTS.items():
         files[spec['path']] = render(agent).encode()
         for rel, data in skill_files(agent).items():
             files[f'{spec["skills"]}/{rel}'] = data
+    for folder, scripts in HOOK_SCRIPTS.items():
+        for script in scripts:
+            files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
+    files[RULES] = codex_rules(home)
+    for agent, rel in HOOK_CONFIGS.items():
+        try:
+            files[rel] = hook_config(agent, home)
+        except ValueError:
+            pass  # unparseable config: never overwrite it; `check` reports it as invalid
     for f in sorted(SUBAGENTS.glob('*.toml')):
         source = tomllib.loads(f.read_text())
         for agent, (path, fmt) in SUBAGENT_FORMATS.items():
@@ -118,7 +206,7 @@ def outputs():
 def install(home, dry_run=False):
     changed = False
     backup_dir = home / '.agent-harness' / 'backups' / time.strftime('%Y%m%d-%H%M%S')
-    for rel, content in outputs().items():
+    for rel, content in outputs(home).items():
         target = home / rel
         if target.is_file() and target.read_bytes() == content:
             continue
@@ -141,10 +229,17 @@ def install(home, dry_run=False):
 
 def check(home):
     problems = []
-    for rel, content in outputs().items():
+    for rel, content in outputs(home).items():
         target = home / rel
         if not target.is_file() or target.read_bytes() != content:
             problems.append(f'drift: {target}')
+    for rel in SELFTESTED:
+        script = home / rel
+        if script.is_file():
+            result = subprocess.run([python_for(home), str(script), 'selftest'],
+                                    capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                problems.append(f'selftest failed: {script}')
     for rel, parse in CONFIGS.items():
         path = home / rel
         if path.is_file():

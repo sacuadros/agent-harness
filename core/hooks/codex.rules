@@ -1,0 +1,16 @@
+# Harness parity with ~/.claude/hooks/harness_guards.py: remote and delivery operations
+# need explicit user approval for destination and operation (CLAUDE.md "Remote operation
+# authorization"). Hooks cannot "ask" in Codex, so these prompts live here.
+prefix_rule(pattern=["git", "push"], decision="prompt", justification="Remote operation: requires explicit user authorization.", match=["git push origin main"])
+prefix_rule(pattern=[["ssh", "scp", "sftp", "mosh", "rsync"]], decision="prompt", justification="Remote connection or transfer: requires explicit user authorization.", match=["ssh host uptime", "rsync -a dist/ host:/srv"])
+prefix_rule(pattern=["gh", "pr", ["create", "merge", "close", "ready", "comment", "review"]], decision="prompt", justification="GitHub PR operation: requires explicit user authorization.", match=["gh pr create --fill"], not_match=["gh pr view 3"])
+prefix_rule(pattern=["gh", "release", "create"], decision="prompt", justification="GitHub release: requires explicit user authorization.")
+prefix_rule(pattern=["gh", "repo", ["create", "delete"]], decision="prompt", justification="GitHub repository operation: requires explicit user authorization.")
+prefix_rule(pattern=["gh", "workflow", "run"], decision="prompt", justification="GitHub workflow run: requires explicit user authorization.")
+prefix_rule(pattern=[["npm", "pnpm", "yarn"], "publish"], decision="prompt", justification="Package publish: requires explicit user authorization.", match=["pnpm publish"])
+prefix_rule(pattern=["wrangler", "deploy"], decision="prompt", justification="Deploy: requires explicit user authorization.")
+prefix_rule(pattern=["wrangler", "pages", "deploy"], decision="prompt", justification="Deploy: requires explicit user authorization.", not_match=["wrangler pages dev"])
+prefix_rule(pattern=[["netlify", "fly"], "deploy"], decision="prompt", justification="Deploy: requires explicit user authorization.")
+prefix_rule(pattern=["vercel"], decision="prompt", justification="Deploy: requires explicit user authorization.")
+prefix_rule(pattern=["codegraph", "index"], decision="prompt", justification="Only for explicit index-corruption recovery; confirm that is the case.")
+prefix_rule(pattern=["codegraph", ["uninit", "install", "uninstall", "upgrade"]], decision="forbidden", justification="Global rule: never run CodeGraph lifecycle commands; ask the user to run them.", match=["codegraph uninstall"], not_match=["codegraph query Foo"])
