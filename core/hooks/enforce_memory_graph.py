@@ -21,8 +21,12 @@ BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', '
 MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
 CLI_WRITE = re.compile(r'(?:^|[;&|\n]\s*)engram\s+(?:save|update)\b')
 SEARCH_CMD = re.compile(r'^\s*(?:rg|grep|egrep|ag|find|fd|git\s+grep)\b'  # PowerShell below
-                        r'|^\s*(?i:select-string|findstr|(?:get-childitem|gci)\b.*\s-r(?:ecurse)?'
-                        r'|(?:ls|dir)\b.*\s-recurse)\b')
+                        # PowerShell takes any unambiguous parameter prefix; -Depth implies -Recurse.
+                        # ls/dir need -rec or longer: POSIX `ls -r` only reverses the sort.
+                        r'|^\s*(?i:select-string|findstr'
+                        # It also takes en and em dashes as the parameter prefix, and -s for -Recurse.
+                        r'|(?:get-childitem|gci)\b.*\s[-–—](?:r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?|de(?:p(?:th?)?)?|s)'
+                        r'|(?:ls|dir)\b.*\s[-–—](?:rec(?:u(?:r(?:se?)?)?)?|depth))\b')
 
 
 def entries(path):
@@ -209,7 +213,10 @@ def selftest():
     assert pretool_decision({'tool_name': 'PowerShell', 'cwd': repo, 'transcript_path': fresh,
                              'tool_input': {'command': 'grep -rn foo .'}})
     for search in ('Select-String -Path *.py -Pattern foo', 'findstr /s foo *',
-                   'Get-ChildItem -Recurse -Filter *.py', 'gci -r', 'ls -Recurse'):
+                   'Get-ChildItem -Recurse -Filter *.py', 'gci -r', 'ls -Recurse',
+                   # PowerShell accepts any unambiguous parameter prefix; -Depth implies -Recurse.
+                   'gci -rec', 'Get-ChildItem -Recu', 'gci -Depth 3', 'dir -rec *.py', 'ls -Depth 2',
+                   'gci -s *.py', 'Get-ChildItem –Recurse'):  # -s alias; en dash prefix
         assert pretool_decision({'tool_name': 'PowerShell', 'cwd': repo, 'transcript_path': fresh,
                                  'tool_input': {'command': search}}), search
     # POSIX `ls -r` only reverses the sort; `sls` is also the Serverless Framework CLI.

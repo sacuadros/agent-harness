@@ -49,9 +49,19 @@ CREDENTIAL = re.compile(
     r'|/?(?=[\s;&|)]|$))'
     r'|\.aws\b|\.gnupg\b|\.netrc\b|\.git-credentials\b|\.docker/config\.json|\.kube/config\b'
     r'|\.config/gh/hosts\.yml|\.config/gcloud\b|\.codex/auth\.json|\.pi/agent/auth\.json'
-    r'|AppData/Roaming/GitHub[^/]*/hosts\.yml)', re.I)  # Windows and APFS ignore case
+    r'|AppData/Roaming/(?:GitHub[^/]*/hosts\.yml|(?:gcloud|gnupg)(?=[/\s;&|)]|$)))', re.I)  # Windows and APFS ignore case
 # Commands that use a key or name a path without printing secrets (git covers -m messages).
 USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'git', 'kubectl'}
+# git also prints files (diff, blame --contents, merge-file -p, archive, config -f), so only these
+# subcommands are exempt. ponytail: `git -c core.sshCommand=... fetch` is denied; use GIT_SSH_COMMAND.
+GIT_USES_KEYS = {'commit', 'tag', 'notes', 'push', 'fetch', 'pull', 'clone', 'remote', 'ls-remote', 'submodule'}
+
+
+def git_subcommand(words):
+    i = 1
+    while i < len(words) and words[i].startswith('-'):
+        i += 2 if words[i] in ('-C', '-c') else 1
+    return words[i] if i < len(words) else ''
 KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|internet)-password\b.*'
                              r'\s-\w*[wg]\w*|dump-keychain\b.*\s-d)')
 
@@ -59,8 +69,9 @@ KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|inte
 def normalize_paths(cmd):
     cmd = re.sub(r'["\'`]', '', cmd).replace('\\', '/')  # Windows separators, and `\.ssh` escapes
     cmd = re.sub(r'/(?:\./)+', '/', re.sub(r'/{2,}', '/', cmd))
-    cmd = re.sub(r'(?i)%LOCALAPPDATA%|\$\{?env:LOCALAPPDATA\}?', '~/AppData/Local', cmd)
-    cmd = re.sub(r'(?i)%APPDATA%|\$\{?env:APPDATA\}?', '~/AppData/Roaming', cmd)
+    # Git Bash inherits these as plain $APPDATA and $LOCALAPPDATA.
+    cmd = re.sub(r'(?i)%LOCALAPPDATA%|\$\{?(?:env:)?LOCALAPPDATA\b\}?', '~/AppData/Local', cmd)
+    cmd = re.sub(r'(?i)%APPDATA%|\$\{?(?:env:)?APPDATA\b\}?', '~/AppData/Roaming', cmd)
     # POSIX spellings stay case-sensitive ($home and src/users/ are ordinary names there).
     cmd = re.sub(r'\$\(\s*echo\s+~\s*\)|\$\{?HOME\}?|/Users/[^/\s]+|/home/[^/\s]+'
                  r'|(?i:%USERPROFILE%|%HOMEDRIVE%%HOMEPATH%|\$\{?env:HOMEDRIVE\}?\$\{?env:HOMEPATH\}?'
@@ -76,8 +87,9 @@ def reads_credentials(cmd):
         words = [w for w in segment.split() if not re.match(r'^\w+=', w)]
         while words and words[0] in ('sudo', 'command', 'env', 'exec'):
             words.pop(0)
-        if words and words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') not in USES_KEYS \
-                and CREDENTIAL.search(segment):
+        name = words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') if words else ''
+        uses_keys = name in USES_KEYS and (name != 'git' or git_subcommand(words) in GIT_USES_KEYS)
+        if words and not uses_keys and CREDENTIAL.search(segment):
             return True
     return False
 CODEGRAPH_FORBIDDEN = re.compile(SEG + r'codegraph\s+(uninit|install|uninstall|upgrade)\b')
@@ -89,8 +101,10 @@ PATCH_FILE = re.compile(r'^\*\*\* (?:Update|Delete) File: (.+)$', re.M)  # Codex
 CODEGRAPH_INDEX = re.compile(SEG + r'codegraph\s+index\b')
 # Matched on normalize_paths(cmd), so Windows homes and %LOCALAPPDATA% already read ~/AppData/Local.
 TMP_WORKTREE = re.compile(SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:\S+\s+)?)*'
-                          r'(?:/tmp|/var/tmp|/private/tmp|/private/var/tmp|~/AppData/Local/Temp'
-                          r'|\$\{?env:TE?MP\}?|%TE?MP%|[a-z]:/Windows/Temp)(?=[/\s;&|)]|$)', re.I)
+                          r'(?:(?:/tmp|/var/tmp|/private/tmp|/private/var/tmp|/(?:private/)?var/folders'
+                          r'|~/AppData/Local/Temp|\$\{?(?:env:)?TE?MP\b\}?|%TE?MP%|[a-z]:/Windows/Temp)(?=[/\s;&|)]|$)'
+                          # macOS $TMPDIR ends in /, so "$TMPDIR"wt (quotes dropped) is a path; mktemp -d uses it.
+                          r'|\$\{?TMPDIR|(?:\$\(\s*)?mktemp\b)', re.I)
 
 
 def decision(kind, reason):
@@ -272,19 +286,34 @@ def selftest():
                    r'gc $env:HOME\.ssh\id_rsa', r'gc "C:\Users\John Doe\.ssh\id_rsa"',
                    r'gc ~\AppData\Roaming\GitHub` CLI\hosts.yml', r'gc ~\AppData\Roaming\GitHub*\hosts.yml',
                    # Every backslash becomes `/`: bash reads `\.` as `.`, so keeping it would let this through.
-                   r'cat ~/\.ssh/id_rsa'):
+                   r'cat ~/\.ssh/id_rsa',
+                   # gcloud and GnuPG keep their Windows state under %APPDATA%; git can print any file.
+                   r'gc $env:APPDATA\gcloud\application_default_credentials.json',
+                   r'Copy-Item -Recurse %APPDATA%\gnupg x', r'GIT.exe diff --no-index NUL ~\.ssh\id_rsa',
+                   'git diff --no-index /dev/null ~/.ssh/id_ed25519',
+                   # Review findings: git prints files in many ways, and Git Bash spells %APPDATA% as $APPDATA.
+                   'git diff /dev/null ~/.ssh/id_rsa', 'git blame --contents ~/.ssh/id_rsa README.md',
+                   'git merge-file -p ~/.ssh/id_rsa /dev/null /dev/null', 'git archive --add-file=~/.ssh/id_rsa HEAD',
+                   'git config -f ~/.aws/credentials --list', 'cat $APPDATA/gcloud/credentials.db',
+                   'cat ${APPDATA}/gnupg/pubring.kbx'):
         assert bash(secret) == 'deny', secret
     for fine in (r'ssh -i C:\Users\me\.ssh\id_ed25519 host uptime', r'ssh.exe -i ~\.ssh\id_rsa host',
                  r'Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub', r'git -C C:\Users\me\repo status',
                  # POSIX paths that only look like a home, and escaped regexes, stay allowed.
                  'ls ~/Projects/users/x/.ssh', 'ls app/users/fixtures/.ssh', 'ls src/Views/Home/x/.ssh',
-                 'cat $home/.aws/notes'):
+                 'cat $home/.aws/notes', 'git diff --no-index a.txt b.txt', 'git diff ~/.ssh/config',
+                 'git -C ~/repo push origin main', 'git commit -m "docs: mention ~/.aws/config"',
+                 'ls ~/AppData/Roaming/gcloud-sdk-notes'):
         assert bash(fine) != 'deny', fine
     for temp in (r'git worktree add $env:TEMP\wt feature', r'git worktree add %TEMP%\wt',
                  r'git worktree add C:\Users\me\AppData\Local\Temp\wt', r'git worktree add "C:\Windows\Temp\wt"',
                  r'git worktree add C:\\Windows\\Temp\\wt', r'git worktree add "C:\Users\John Doe\AppData\Local\Temp\wt"',
                  r'git worktree add $env:LOCALAPPDATA\Temp\wt', r'git worktree add %LOCALAPPDATA%\Temp\wt',
-                 r'git worktree add ~\AppData\Local\Temp\wt', r'git worktree add $env:USERPROFILE\AppData\Local\Temp\wt'):
+                 r'git worktree add ~\AppData\Local\Temp\wt', r'git worktree add $env:USERPROFILE\AppData\Local\Temp\wt',
+                 # macOS per-user temp: $TMPDIR is /var/folders/<id>/T/.
+                 'git worktree add $TMPDIR/wt', 'git worktree add "${TMPDIR}wt" -b x',
+                 'git worktree add /var/folders/1s/abc/T/wt', 'git worktree add /private/var/folders/1s/abc/T/wt',
+                 'git worktree add "$TMPDIR"wt', 'git worktree add $(mktemp -d)/wt', 'git worktree add $TEMP/wt'):
         assert bash(temp) == 'deny', temp
     assert bash(r'git worktree add ..\repo-worktrees\x') is None
 
