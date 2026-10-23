@@ -48,7 +48,8 @@ CREDENTIAL = re.compile(
     r'~/(?:\.ssh(?:/(?:id_[\w-]+|[^\s/]*_key|[^\s/]*\.pem|[^\s/]*[*?\[][^\s/]*)(?![\w.-]*\.pub)'
     r'|/?(?=[\s;&|)]|$))'
     r'|\.aws\b|\.gnupg\b|\.netrc\b|\.git-credentials\b|\.docker/config\.json|\.kube/config\b'
-    r'|\.config/gh/hosts\.yml|\.config/gcloud\b|\.codex/auth\.json|\.pi/agent/auth\.json)')
+    r'|\.config/gh/hosts\.yml|\.config/gcloud\b|\.codex/auth\.json|\.pi/agent/auth\.json'
+    r'|(?i:AppData/Roaming/GitHub CLI/hosts\.yml))')
 # Commands that use a key or name a path without printing secrets (git covers -m messages).
 USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'git', 'kubectl'}
 KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|internet)-password\b.*'
@@ -56,8 +57,10 @@ KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|inte
 
 
 def normalize_paths(cmd):
-    cmd = re.sub(r'["\']', '', cmd)
-    cmd = re.sub(r'\$\(\s*echo\s+~\s*\)|\$\{?HOME\}?|/Users/[^/\s]+|/home/[^/\s]+', '~', cmd)
+    cmd = re.sub(r'["\']', '', cmd).replace('\\', '/')  # Windows paths use backslashes
+    cmd = re.sub(r'(?i)%APPDATA%|\$\{?env:APPDATA\}?', '~/AppData/Roaming', cmd)
+    cmd = re.sub(r'(?i)\$\(\s*echo\s+~\s*\)|\$\{?HOME\}?|%USERPROFILE%|\$\{?env:USERPROFILE\}?'
+                 r'|(?:[a-z]:)?/Users/[^/\s]+|/home/[^/\s]+', '~', cmd)
     return re.sub(r'/(?:\./)+', '/', re.sub(r'/{2,}', '/', cmd))
 
 
@@ -69,7 +72,8 @@ def reads_credentials(cmd):
         words = [w for w in segment.split() if not re.match(r'^\w+=', w)]
         while words and words[0] in ('sudo', 'command', 'env', 'exec'):
             words.pop(0)
-        if words and words[0].rsplit('/', 1)[-1] not in USES_KEYS and CREDENTIAL.search(segment):
+        if words and words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') not in USES_KEYS \
+                and CREDENTIAL.search(segment):
             return True
     return False
 CODEGRAPH_FORBIDDEN = re.compile(SEG + r'codegraph\s+(uninit|install|uninstall|upgrade)\b')
@@ -80,7 +84,10 @@ CODEX_PROMPTED = [p.replace(GIT, r'git\s+') for p, _ in REMOTE if p != RSYNC_REM
 PATCH_FILE = re.compile(r'^\*\*\* (?:Update|Delete) File: (.+)$', re.M)  # Codex apply_patch
 CODEGRAPH_INDEX = re.compile(SEG + r'codegraph\s+index\b')
 TMP_WORKTREE = re.compile(SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:\S+\s+)?)*'
-                          r'["\']?(?:/tmp|/var/tmp|/private/tmp|/private/var/tmp)\b')
+                          r'["\']?(?:/tmp|/var/tmp|/private/tmp|/private/var/tmp)\b'
+                          r'|' + SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:\S+\s+)?)*["\']?(?i:\$\{?env:TE?MP\}?'
+                          r'|%TE?MP%|[a-z]:[\\/](?:Windows[\\/]Temp|Users[\\/][^\\/\s]+[\\/]AppData[\\/]Local[\\/]Temp))'
+                          r'(?=[\\/\s"\']|$)')
 
 
 def decision(kind, reason):
@@ -250,6 +257,20 @@ def selftest():
                  'kubectl --kubeconfig ~/.kube/config get pods',
                  'git commit -m "fix: guard ~/.aws/ reads"', 'cat ~/.ssh/id_ed25519-cert.pub'):
         assert bash(fine) != 'deny', fine
+    # Windows: every home spelling, PowerShell readers, and gh's token file under %APPDATA%.
+    for secret in (r'Get-Content C:\Users\me\.ssh\id_ed25519', r'gc C:/Users/me/.aws/credentials',
+                   r'type %USERPROFILE%\.netrc', r'Get-Content $env:USERPROFILE\.ssh\id_rsa',
+                   r'Copy-Item ${env:userprofile}\.codex\auth.json x', r'Get-Content $HOME\.git-credentials',
+                   r'gc ~\.ssh\id_ed25519', r'Get-Content "$env:APPDATA\GitHub CLI\hosts.yml"',
+                   r'type %APPDATA%\GitHub CLI\hosts.yml', r'gc C:\Users\me\AppData\Roaming\GitHub CLI\hosts.yml'):
+        assert bash(secret) == 'deny', secret
+    for fine in (r'ssh -i C:\Users\me\.ssh\id_ed25519 host uptime', r'ssh.exe -i ~\.ssh\id_rsa host',
+                 r'Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub', r'git -C C:\Users\me\repo status'):
+        assert bash(fine) != 'deny', fine
+    for temp in (r'git worktree add $env:TEMP\wt feature', r'git worktree add %TEMP%\wt',
+                 r'git worktree add C:\Users\me\AppData\Local\Temp\wt', r'git worktree add "C:\Windows\Temp\wt"'):
+        assert bash(temp) == 'deny', temp
+    assert bash(r'git worktree add ..\repo-worktrees\x') is None
 
     tmp = Path(tempfile.mkdtemp())
     cfg = HOME / '.claude' / 'settings.json'
