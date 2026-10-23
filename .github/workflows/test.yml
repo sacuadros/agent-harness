@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Hook selftests
+        run: |
+          python core/hooks/harness_guards.py selftest
+          python core/hooks/enforce_memory_graph.py selftest
+      - name: Test suite
+        run: python -m unittest tests.test_harness -v
