@@ -12,7 +12,7 @@ MANAGED_SKILLS = {
     'backlog', 'story', 'pair', 'brand-graphic-design', 'dependency-safety',
     'performance-marketing-senior', 'promote-project-convention', 'secure-development',
     'seo-copy-senior', 'software-architecture', 'unslop', 'work-unit-commits', 'chained-pr',
-    'cognitive-doc-design',
+    'cognitive-doc-design', 'systematic-debugging',
 }
 
 
@@ -232,6 +232,57 @@ class Hooks(unittest.TestCase):
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'selftest failed: {broken}', result.stdout)
+
+
+class Plugins(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def test_superpowers_disabled_other_plugins_untouched(self):
+        settings = self.home / '.claude' / 'settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'enabledPlugins': {
+            'superpowers@claude-plugins-official': True, 'engram@engram': True}}))
+        harness('install', '--home', str(self.home))
+        self.assertEqual(json.loads(settings.read_text())['enabledPlugins'], {
+            'superpowers@claude-plugins-official': False, 'engram@engram': True})
+
+    def test_systematic_debugging_is_a_harness_skill(self):
+        harness('install', '--home', str(self.home))
+        for agent_dir in ('.claude', '.codex'):
+            self.assertTrue((self.home / agent_dir / 'skills' / 'systematic-debugging' / 'SKILL.md').is_file())
+        self.assertIn('core/skills/systematic-debugging', (REPO / 'NOTICE').read_text())
+
+    def test_check_flags_reenabled_superpowers(self):
+        harness('install', '--home', str(self.home))
+        settings = self.home / '.claude' / 'settings.json'
+        data = json.loads(settings.read_text())
+        data['enabledPlugins']['superpowers@claude-plugins-official'] = True
+        settings.write_text(json.dumps(data, indent=2) + '\n')
+        result = run('check', '--home', str(self.home))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'drift: {settings}', result.stdout)
+
+    def test_instructions_do_not_name_superpowers(self):
+        for agent in ('claude', 'codex'):
+            self.assertNotIn('Superpowers', harness('render', agent))
+
+    def test_codex_config_changes_one_line(self):
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir(parents=True)
+        before = ('model = "x"\n\n[plugins."superpowers@openai-curated"]\nenabled = true\n\n'
+                  '[plugins."other@x"]\nenabled = true\n')
+        config.write_text(before)
+        harness('install', '--home', str(self.home))
+        self.assertEqual(config.read_text(), before.replace('curated"]\nenabled = true', 'curated"]\nenabled = false'))
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_codex_config_without_the_plugin_is_left_alone(self):
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir(parents=True)
+        config.write_text('model = "x"\n')
+        harness('install', '--home', str(self.home))
+        self.assertEqual(config.read_text(), 'model = "x"\n')
 
 
 class Check(unittest.TestCase):

@@ -10,3 +10,8 @@ Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0):
 
 They were modified to drop gentle-ai-specific workflow references (SDD/ODD,
 skill registry) and to fit this harness's Slice Flow.
+
+core/skills/systematic-debugging is derived from superpowers by Jesse Vincent
+(https://github.com/obra/superpowers), MIT License, Copyright (c) 2025 Jesse
+Vincent. Its references to other superpowers skills were replaced with this
+harness's equivalents. Full license text: licenses/superpowers-MIT.txt.

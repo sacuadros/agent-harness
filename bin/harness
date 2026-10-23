@@ -20,6 +20,7 @@ INSTRUCTIONS = REPO / 'core' / 'instructions'
 SKILLS = REPO / 'core' / 'skills'
 SUBAGENTS = REPO / 'core' / 'agents'
 HOOKS = REPO / 'core' / 'hooks'
+PLUGINS = tomllib.loads((REPO / 'core' / 'plugins.toml').read_text())
 # Hook scripts each agent's hook config runs (Codex also calls the Claude copies).
 HOOK_SCRIPTS = {
     '.claude/hooks': ('harness_guards.py', 'enforce_memory_graph.py', 'engram_auto_enroll.py'),
@@ -157,7 +158,23 @@ def hook_config(agent, home):
                        'codex_hooks': str(home / '.codex/hooks')}.items():
         template = template.replace('{' + key + '}', value)
     data['hooks'] = merge_hooks(data.get('hooks', {}), json.loads(template))
+    if agent == 'claude':
+        data.setdefault('enabledPlugins', {}).update(PLUGINS['claude'])
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
+
+
+CODEX_CONFIG = '.codex/config.toml'
+
+
+def codex_config(home):
+    """Flip `enabled` inside each managed plugin table; every other byte stays as written."""
+    text = (home / CODEX_CONFIG).read_text()
+    for plugin, enabled in PLUGINS['codex'].items():
+        table = re.escape(f'[plugins."{plugin}"]')
+        text = re.sub(rf'(^{table}\n(?:(?!\[).*\n)*?)enabled = (?:true|false)\n',
+                      rf'\g<1>enabled = {str(enabled).lower()}\n', text, count=1, flags=re.M)
+    tomllib.loads(text)  # never write a config Codex could not read
+    return text.encode()
 
 
 RULES = '.codex/rules/default.rules'
@@ -191,6 +208,11 @@ def outputs(home):
         for script in scripts:
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     files[RULES] = codex_rules(home)
+    if (home / CODEX_CONFIG).is_file():
+        try:
+            files[CODEX_CONFIG] = codex_config(home)
+        except ValueError:
+            pass  # unparseable config: `check` reports it as invalid
     for agent, rel in HOOK_CONFIGS.items():
         try:
             files[rel] = hook_config(agent, home)

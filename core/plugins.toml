@@ -1,0 +1,6 @@
+# Plugin switches the harness enforces; every other plugin keeps the value you set.
+[claude]
+"superpowers@claude-plugins-official" = false
+
+[codex]
+"superpowers@openai-curated" = false

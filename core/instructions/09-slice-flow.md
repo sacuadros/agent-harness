@@ -11,7 +11,7 @@ Build in small vertical slices with the user as navigator. Plan only what the ne
 7. **Risk line.** Close every code change with `Risk: none` or `Risk: <item> (reason)`. Items: irreversible data or migrations, security, contracts others consume (shared code counts), concurrency, delivery or environment, and no test that would catch a regression. A named item raises assurance to Critical.
 8. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next slice. Commit, push, PR, merge, publish, and deploy remain separately authorized.
 
-Assurance (Basic, Standard, Critical) sets verification depth independently of slice size. Apply Superpowers skills selectively inside this flow; Slice Flow is the only planning authority, so they must not create parallel plans or spec artifacts. If a skill or hook requires a pause or work outside the flow, name its source and complete unaffected authorized work.
+Assurance (Basic, Standard, Critical) sets verification depth independently of slice size. Apply process skills (for example `systematic-debugging`) selectively inside this flow; Slice Flow is the only planning authority, so they must not create parallel plans or spec artifacts. If a skill or hook requires a pause or work outside the flow, name its source and complete unaffected authorized work.
 
 Repositories that already contain `openspec/` keep it as project history; continue an OpenSpec change there only when the user asks.
 
