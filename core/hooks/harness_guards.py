@@ -57,8 +57,9 @@ USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'git', 'kubectl'}
 GIT_USES_KEYS = {'commit', 'tag', 'notes', 'push', 'fetch', 'pull', 'clone', 'remote', 'ls-remote', 'submodule'}
 GIT_VALUE_OPTIONS = {'-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
                      '--attr-source', '--config-env'}
-GIT_RUNS_OR_STORES = re.compile(r'\s(?:--upload-pack|--receive-pack|-u|-\w*F|--file|--template)\b'
-                                r'|\ssubmodule\s+foreach\b')
+# -c/--config can point core.sshCommand, protocol.ext, or a helper at any command; --exec is --receive-pack.
+GIT_RUNS_OR_STORES = re.compile(r'\s(?:--upload-pack|--receive-pack|--exec|-u|-\w*F|--file|--template'
+                                r'|-c|--config)\b|\ssubmodule\s+foreach\b|ext::')
 # Telling ssh which key to use names the key without printing it.
 SSH_KEY_OPTION = re.compile(r'(?i)(?:core\.sshCommand|GIT_SSH_COMMAND)[=\s]+ssh(?:\.exe)?\s+-i\s*\S+')
 
@@ -90,7 +91,11 @@ def reads_credentials(cmd):
     if KEYCHAIN_SECRET.search(cmd):
         return True
     for segment in re.split(r'[;&|\n]+', cmd):
-        segment = SSH_KEY_OPTION.sub(' ', segment)
+        # Only git reads core.sshCommand and GIT_SSH_COMMAND; for anything else the "key" is a file to read.
+        stripped = SSH_KEY_OPTION.sub(' ', segment)
+        first = [w for w in stripped.split() if not re.match(r'^\w+=', w)][:1]
+        if first and first[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') == 'git':
+            segment = stripped
         words = [w for w in segment.split() if not re.match(r'^\w+=', w)]
         while words and words[0] in ('sudo', 'command', 'env', 'exec'):
             words.pop(0)
@@ -309,7 +314,12 @@ def selftest():
                    "git fetch --upload-pack='cat ~/.ssh/id_rsa 1>&2' .", "git clone -u 'cat ~/.ssh/id_rsa >&2' . x",
                    "git submodule foreach 'cat ~/.ssh/id_rsa'", 'git commit --allow-empty -F ~/.ssh/id_rsa',
                    'git tag -a v1 -F ~/.ssh/id_rsa', 'git notes add -F ~/.aws/credentials',
-                   "GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa' git diff /dev/null ~/.ssh/id_rsa"):
+                   "GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa' git diff /dev/null ~/.ssh/id_rsa",
+                   # The key-option strip is for git only, and -c/--config/--exec can make git run a command.
+                   'grep -r . core.sshCommand ssh -i ~/.ssh/id_rsa',
+                   'git -c core.sshCommand="cat ~/.ssh/id_rsa" fetch x:y',
+                   'git -c protocol.ext.allow=always fetch "ext::sh -c cat% ~/.ssh/id_rsa"',
+                   'git clone --config core.sshCommand="cat ~/.ssh/id_rsa" x:y z', 'git push --exec="cat ~/.ssh/id_rsa" x'):
         assert bash(secret) == 'deny', secret
     for fine in (r'ssh -i C:\Users\me\.ssh\id_ed25519 host uptime', r'ssh.exe -i ~\.ssh\id_rsa host',
                  r'Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub', r'git -C C:\Users\me\repo status',
