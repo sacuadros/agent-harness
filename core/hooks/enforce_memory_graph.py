@@ -21,7 +21,7 @@ BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', '
 MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
 CLI_WRITE = re.compile(r'(?:^|[;&|\n]\s*)engram\s+(?:save|update)\b')
 SEARCH_CMD = re.compile(r'^\s*(?:rg|grep|egrep|ag|find|fd|git\s+grep)\b'  # PowerShell below
-                        r'|^\s*(?i:select-string|sls|findstr|(?:get-childitem|gci)\b.*\s-r(?:ecurse)?'
+                        r'|^\s*(?i:select-string|findstr|(?:get-childitem|gci)\b.*\s-r(?:ecurse)?'
                         r'|(?:ls|dir)\b.*\s-recurse)\b')
 
 
@@ -208,11 +208,12 @@ def selftest():
     # Claude Code on Windows runs commands through a separate PowerShell tool.
     assert pretool_decision({'tool_name': 'PowerShell', 'cwd': repo, 'transcript_path': fresh,
                              'tool_input': {'command': 'grep -rn foo .'}})
-    for search in ('Select-String -Path *.py -Pattern foo', 'sls foo *.py', 'findstr /s foo *',
+    for search in ('Select-String -Path *.py -Pattern foo', 'findstr /s foo *',
                    'Get-ChildItem -Recurse -Filter *.py', 'gci -r', 'ls -Recurse'):
         assert pretool_decision({'tool_name': 'PowerShell', 'cwd': repo, 'transcript_path': fresh,
                                  'tool_input': {'command': search}}), search
-    for listing in ('Get-ChildItem', 'ls -r'):  # POSIX `ls -r` only reverses the sort
+    # POSIX `ls -r` only reverses the sort; `sls` is also the Serverless Framework CLI.
+    for listing in ('Get-ChildItem', 'ls -r', 'sls deploy'):
         assert pretool_decision({'tool_name': 'PowerShell', 'cwd': repo, 'transcript_path': fresh,
                                  'tool_input': {'command': listing}}) is None, listing
     ps_used = transcript(('prompt', 'x'), ('PowerShell', {'command': 'codegraph query x'}))
