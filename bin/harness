@@ -38,6 +38,9 @@ AGENTS = {
     # OpenCode reads ~/.claude/skills itself, so it gets no skill copy of its own.
     'opencode': {'path': '.config/opencode/AGENTS.md', 'skills': None, 'marker': 'opencode-native',
                  'vars': {'agent': 'OpenCode', 'cmd': '/'}},
+    # Pi reads ~/.claude/skills through `skills` in its settings.json.
+    'pi': {'path': '.pi/agent/AGENTS.md', 'skills': None, 'marker': 'pi-native',
+           'vars': {'agent': 'Pi', 'cmd': '/skill:'}},
 }
 
 
@@ -47,6 +50,7 @@ CONFIGS = {
     '.codex/config.toml': tomllib.loads,
     '.codex/hooks.json': json.loads,
     '.config/opencode/opencode.json': json.loads,
+    '.pi/agent/settings.json': json.loads,
 }
 
 
@@ -113,9 +117,16 @@ def opencode_subagent(source, spec):
     return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
 
 
+def pi_subagent(source, spec):
+    lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}',
+             f'tools: {spec["tools"]}']
+    return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
+
+
 SUBAGENT_FORMATS = {'claude': ('.claude/agents/{}.md', claude_subagent),
                     'codex': ('.codex/agents/{}.toml', codex_subagent),
-                    'opencode': ('.config/opencode/agents/{}.md', opencode_subagent)}
+                    'opencode': ('.config/opencode/agents/{}.md', opencode_subagent),
+                    'pi': ('.pi/agent/agents/{}.md', pi_subagent)}
 
 
 def fill(text, spec):
@@ -202,6 +213,18 @@ def codex_config(home):
     return text.encode()
 
 
+PI_SETTINGS = '.pi/agent/settings.json'
+
+
+def pi_settings(home):
+    """Point Pi at the harness skills in ~/.claude/skills; keep everything else."""
+    data = json.loads((home / PI_SETTINGS).read_text())
+    skills = data.setdefault('skills', [])
+    if '~/.claude/skills' not in skills:
+        skills.append('~/.claude/skills')
+    return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
+
+
 OPENCODE_CONFIG = '.config/opencode/opencode.json'
 
 
@@ -242,7 +265,7 @@ def codex_rules(home):
 
 
 # Optional agents get files only on PCs that have them; Claude and Codex are always managed.
-OPTIONAL_AGENTS = {'opencode': '.config/opencode'}
+OPTIONAL_AGENTS = {'opencode': '.config/opencode', 'pi': '.pi/agent'}
 
 
 def present(agent, home):
@@ -262,6 +285,11 @@ def outputs(home):
         for script in scripts:
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     files[RULES] = codex_rules(home)
+    if (home / PI_SETTINGS).is_file():
+        try:
+            files[PI_SETTINGS] = pi_settings(home)
+        except ValueError:
+            pass  # unparseable config: `check` reports it as invalid
     if (home / OPENCODE_CONFIG).is_file():
         try:
             files[OPENCODE_CONFIG] = opencode_config(home)
@@ -282,10 +310,12 @@ def outputs(home):
         for agent, (path, fmt) in SUBAGENT_FORMATS.items():
             if present(agent, home):
                 files[path.format(source['name'])] = fmt(source, source[agent]).encode()
-    if present('opencode', home):
-        plugin = (REPO / 'core' / 'opencode' / 'agent-harness.ts').read_text()
-        plugin = plugin.replace('{python}', python_for(home)).replace('{claude_hooks}', str(home / '.claude/hooks'))
-        files['.config/opencode/plugins/agent-harness.ts'] = plugin.encode()
+    for agent, source, target in (('opencode', 'opencode/agent-harness.ts', '.config/opencode/plugins/agent-harness.ts'),
+                                  ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts')):
+        if present(agent, home):
+            guard = (REPO / 'core' / source).read_text()
+            guard = guard.replace('{python}', python_for(home)).replace('{claude_hooks}', str(home / '.claude/hooks'))
+            files[target] = guard.encode()
     return files
 
 

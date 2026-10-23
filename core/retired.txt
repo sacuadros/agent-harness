@@ -13,3 +13,5 @@
 .agents/skills/work-unit-commits
 .agents/skills/chained-pr
 .agents/skills/cognitive-doc-design
+# Pi: the CodeGraph block now lives in ~/.pi/agent/AGENTS.md with the rest of the harness.
+.pi/agent/APPEND_SYSTEM.md

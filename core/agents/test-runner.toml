@@ -24,3 +24,8 @@ vars = { lead = "primary agent" }
 description = "Proactive validation role for long or noisy independent checks. Use when isolated test output protects the primary context; otherwise launch a bounded generic checks_<scope> mission."
 permission = { edit = "deny", task = "deny", external_directory = "deny", webfetch = "deny", websearch = "deny", skill = "deny" }
 vars = { lead = "primary agent" }
+
+[pi]
+description = "Proactive validation role for long or noisy independent checks. Use when isolated test output protects the primary context; otherwise launch a bounded generic checks_<scope> mission."
+tools = "read, grep, find, ls, bash"
+vars = { lead = "primary agent" }

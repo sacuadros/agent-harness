@@ -300,6 +300,49 @@ class OpenCode(unittest.TestCase):
         self.assertFalse((self.home / '.config' / 'opencode').exists())
 
 
+class Pi(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def test_render_uses_pi_skill_syntax_and_its_own_orchestration(self):
+        text = harness('render', 'pi')
+        self.assertEqual(len(re.findall(r'<!-- pi-native:[a-z-]+ -->', text)), 10)
+        self.assertIn('## Native Pi Orchestration', text)
+        self.assertIn('`/skill:promote-project-convention`', text)
+        self.assertNotIn('Claude Code', text)
+
+    def test_settings_subagents_and_append_system(self):
+        agent_dir = self.home / '.pi' / 'agent'
+        agent_dir.mkdir(parents=True)
+        (agent_dir / 'settings.json').write_text(json.dumps({'defaultModel': 'm', 'packages': ['npm:x']}))
+        (agent_dir / 'APPEND_SYSTEM.md').write_text('old codegraph block\n')
+        harness('install', '--home', str(self.home))
+        settings = json.loads((agent_dir / 'settings.json').read_text())
+        self.assertEqual(settings['defaultModel'], 'm')
+        self.assertEqual(settings['packages'], ['npm:x'])
+        self.assertEqual(settings['skills'], ['~/.claude/skills'])
+        reviewer = (agent_dir / 'agents' / 'independent-reviewer.md').read_text()
+        self.assertTrue(reviewer.startswith('---\nname: independent-reviewer\n'))
+        self.assertIn('tools: read, grep, find, ls, bash\n', reviewer)
+        self.assertIn('edit, write', (agent_dir / 'agents' / 'implementation-worker.md').read_text())
+        self.assertFalse((agent_dir / 'APPEND_SYSTEM.md').exists())
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_guard_extension_is_filled_in_and_checked(self):
+        (self.home / '.pi' / 'agent').mkdir(parents=True)
+        harness('install', '--home', str(self.home))
+        extension = self.home / '.pi' / 'agent' / 'extensions' / 'agent-harness.ts'
+        text = extension.read_text()
+        self.assertIn(f'"{self.home}/.claude/hooks"', text)
+        self.assertIn('ctx.ui.confirm', text)
+        extension.write_text(text + '// hand edit\n')
+        self.assertIn(f'drift: {extension}', run('check', '--home', str(self.home)).stdout)
+
+    def test_nothing_for_pi_when_it_is_not_installed(self):
+        harness('install', '--home', str(self.home))
+        self.assertFalse((self.home / '.pi').exists())
+
+
 class Doctor(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
