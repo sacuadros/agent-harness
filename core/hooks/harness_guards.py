@@ -50,25 +50,39 @@ CREDENTIAL = re.compile(
     r'|\.aws\b|\.gnupg\b|\.netrc\b|\.git-credentials\b|\.docker/config\.json|\.kube/config\b'
     r'|\.config/gh/hosts\.yml|\.config/gcloud\b|\.codex/auth\.json|\.pi/agent/auth\.json'
     r'|AppData/Roaming/(?:GitHub[^/]*/hosts\.yml|(?:gcloud|gnupg)(?=[/\s;&|)]|$)))', re.I)  # Windows and APFS ignore case
-# Commands that use a key or name a path without printing secrets (git covers -m messages).
-USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'git', 'kubectl'}
-# git also prints files (diff, blame --contents, merge-file -p, archive, config -f), so only these
-# subcommands are exempt, and not when they run a command or store a file in the repo.
-GIT_USES_KEYS = {'commit', 'tag', 'notes', 'push', 'fetch', 'pull', 'clone', 'remote', 'ls-remote', 'submodule'}
-GIT_VALUE_OPTIONS = {'-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
-                     '--attr-source', '--config-env'}
-# -c/--config can point core.sshCommand, protocol.ext, or a helper at any command; --exec is --receive-pack.
-GIT_RUNS_OR_STORES = re.compile(r'\s(?:--upload-pack|--receive-pack|--exec|-u|-\w*F|--file|--template'
-                                r'|-c|--config)\b|\ssubmodule\s+foreach\b|ext::')
-# Telling ssh which key to use names the key without printing it.
-SSH_KEY_OPTION = re.compile(r'(?i)(?:core\.sshCommand|GIT_SSH_COMMAND)[=\s]+ssh(?:\.exe)?\s+-i\s*\S+')
+# Commands that use a key or name a path without printing secrets.
+USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'kubectl'}
+# git prints files in too many ways (diff, blame, archive, config -f, -c helpers, ext::) to deny-list,
+# so it gets an allow-list: a credential path may appear only inside a quoted commit/tag/notes/merge/
+# stash message, or inside the quoted ssh command of core.sshCommand / GIT_SSH_COMMAND. The guard
+# does not parse shell quoting, so it trusts those quotes only in one plain git command: no separators,
+# substitutions, expansions, bangs (shell aliases), backslashes in double quotes, or stray quotes.
+_GIT = r'''^\s*(?:env\s+)?(?:GIT_SSH_COMMAND=(?:'[^']*'|"[^"]*")\s+)?(?:\S*[\\/])?git(?:\.exe)?'''
+PLAIN_GIT = re.compile(_GIT + r'''\s[^;&|\n`$!]*$''', re.I)
+# Global options before the subcommand: -C/-c with a value, flags without one, or --opt=value. A bare
+# --namespace or --git-dir would take the next word as its value, so `commit` there is not the subcommand.
+GIT_MESSAGE_CMD = re.compile(_GIT + r'''(?:\s+(?:-[Cc]\s+[^\s'"]+|-[pP]|--no-pager|--paginate|--[\w-]+=[^\s'"]+))*'''
+                             r'''\s+(?:commit|tag|notes|merge|stash)\b''', re.I)
+GIT_LITERAL = re.compile(r'''(?P<lead>(?:^|\s)(?:-[a-zA-Z]*m\s*|--message[=\s]\s*|-c\s+core\.sshCommand=|'''
+                         r'''core\.sshCommand\s+|GIT_SSH_COMMAND=))(?P<value>'[^']*'|"[^"\\]*")''', re.I)
+# Only options that cannot run a command or read or write another file: no -F config, -E log,
+# ProxyCommand, known_hosts files, or control sockets.
+SSH_ONLY = re.compile(r'''(?i)^(?:\S*[\\/])?ssh(?:\.exe)?(?:\s+(?:-i\s*\S+|-p\s*\d+|-[46AaCKkqTtVvXxYy]+'''
+                      r'''|-o\s*(?:IdentitiesOnly|IdentityFile|StrictHostKeyChecking|BatchMode|ConnectTimeout'''
+                      r'''|Port|User|LogLevel|ServerAliveInterval)=\S+))+\s*$''')
 
 
-def git_subcommand(words):
-    i = 1
-    while i < len(words) and words[i].startswith('-'):
-        i += 2 if words[i] in GIT_VALUE_OPTIONS else 1
-    return words[i] if i < len(words) else ''
+def strip_git_literals(cmd):
+    if not PLAIN_GIT.match(cmd):
+        return cmd
+    messages = GIT_MESSAGE_CMD.match(cmd)
+
+    def literal(m):
+        if 'ssh' in m['lead'].lower():
+            return m['lead'] if SSH_ONLY.match(m['value'][1:-1]) else m[0]
+        return m['lead'] if messages else m[0]
+    stripped = GIT_LITERAL.sub(literal, cmd)
+    return cmd if re.search(r'''["']''', stripped) else stripped  # a stray quote: trust none of them
 KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|internet)-password\b.*'
                              r'\s-\w*[wg]\w*|dump-keychain\b.*\s-d)')
 
@@ -87,22 +101,15 @@ def normalize_paths(cmd):
 
 
 def reads_credentials(cmd):
-    cmd = normalize_paths(cmd)
+    cmd = normalize_paths(strip_git_literals(cmd))  # literals first: normalizing drops their quotes
     if KEYCHAIN_SECRET.search(cmd):
         return True
     for segment in re.split(r'[;&|\n]+', cmd):
-        # Only git reads core.sshCommand and GIT_SSH_COMMAND; for anything else the "key" is a file to read.
-        stripped = SSH_KEY_OPTION.sub(' ', segment)
-        first = [w for w in stripped.split() if not re.match(r'^\w+=', w)][:1]
-        if first and first[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') == 'git':
-            segment = stripped
-        words = [w for w in segment.split() if not re.match(r'^\w+=', w)]
+        words =[w for w in segment.split() if not re.match(r'^\w+=', w)]
         while words and words[0] in ('sudo', 'command', 'env', 'exec'):
             words.pop(0)
         name = words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') if words else ''
-        uses_keys = name in USES_KEYS and (name != 'git' or (
-            git_subcommand(words) in GIT_USES_KEYS and not GIT_RUNS_OR_STORES.search(segment)))
-        if words and not uses_keys and CREDENTIAL.search(segment):
+        if words and name not in USES_KEYS and CREDENTIAL.search(segment):
             return True
     return False
 CODEGRAPH_FORBIDDEN = re.compile(SEG + r'codegraph\s+(uninit|install|uninstall|upgrade)\b')
@@ -319,7 +326,22 @@ def selftest():
                    'grep -r . core.sshCommand ssh -i ~/.ssh/id_rsa',
                    'git -c core.sshCommand="cat ~/.ssh/id_rsa" fetch x:y',
                    'git -c protocol.ext.allow=always fetch "ext::sh -c cat% ~/.ssh/id_rsa"',
-                   'git clone --config core.sshCommand="cat ~/.ssh/id_rsa" x:y z', 'git push --exec="cat ~/.ssh/id_rsa" x'):
+                   'git clone --config core.sshCommand="cat ~/.ssh/id_rsa" x:y z', 'git push --exec="cat ~/.ssh/id_rsa" x',
+                   # Allow-list: in git a credential path may appear only in a literal message or as ssh's -i key.
+                   'git commit -m "$(cat ~/.ssh/id_rsa)"', 'git commit -m "x" -m "`cat ~/.ssh/id_rsa`"',
+                   'git stash push -- ~/.aws/credentials', 'git -C ~/.ssh log -p',
+                   # Review of the allow-list: quotes are trusted only in one plain git command.
+                   '''echo "git commit -m '"; cat ~/.ssh/id_rsa; echo "'"''',
+                   "# git commit -m '\ncat ~/.ssh/id_rsa\n# '",
+                   "git commit -m \"$(cat <<'EOF'\nfix: msg\nEOF\ncat ~/.ssh/id_rsa >&2\nEOF\n)\"",
+                   'git commit -m "fix: a\\" ; Get-Content ~/.ssh/id_rsa ; "x"',
+                   "git -c 'alias.x=!cat' x -- GIT_SSH_COMMAND ssh -i ~/.ssh/id_rsa",
+                   "git -c 'alias.x=!eval grep .' x core.sshCommand 'ssh -i ~/.ssh/id_rsa'",
+                   '''git notes add "x -m 'y" -F ~/.ssh/id_rsa "'"''',
+                   "git -c core.sshCommand='ssh -o ProxyCommand=cat -i ~/.ssh/id_rsa' fetch x:y",
+                   "git --namespace commit diff -m '~/.ssh/id_rsa'", "git -c core.sshCommand='ssh -F ~/.aws/credentials' fetch o",
+                   "git -c core.sshCommand='ssh -E ~/.aws/credentials' fetch o",
+                   "GIT_SSH_COMMAND='ssh -o UserKnownHostsFile=~/.aws/credentials' git fetch"):
         assert bash(secret) == 'deny', secret
     for fine in (r'ssh -i C:\Users\me\.ssh\id_ed25519 host uptime', r'ssh.exe -i ~\.ssh\id_rsa host',
                  r'Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub', r'git -C C:\Users\me\repo status',
@@ -331,7 +353,14 @@ def selftest():
                  # Telling git which key to use names the key without printing it.
                  "git config --global core.sshCommand 'ssh -i ~/.ssh/id_ed25519'",
                  'git -c core.sshCommand="ssh -i ~/.ssh/id_rsa" fetch origin',
-                 "GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa' git fetch", 'git push -u origin main'):
+                 "GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa' git fetch", 'git push -u origin main',
+                 "git commit -m 'fix: guard ~/.netrc reads'", 'git tag -a v1 -m "docs: ~/.aws is denied"',
+                 "git commit -am 'fix: guard ~/.aws reads'", 'git commit -qm"fix: guard ~/.aws reads"',
+                 "git stash push -m 'wip: ~/.aws notes'", "env GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa' git fetch",
+                 "GIT_SSH_COMMAND='ssh -o IdentitiesOnly=yes -i ~/.ssh/id_rsa' git fetch",
+                 r"git config core.sshCommand 'C:\Windows\System32\OpenSSH\ssh.exe -i ~/.ssh/id_rsa'",
+                 "git --no-pager commit -m 'fix: rotate ~/.aws/credentials'", "git -p commit -m 'docs: ~/.aws'",
+                 "git --git-dir=x commit -m 'docs: ~/.aws'", "git -c core.sshCommand='ssh -4 -p 22 -i ~/.ssh/id_rsa' fetch"):
         assert bash(fine) != 'deny', fine
     for temp in (r'git worktree add $env:TEMP\wt feature', r'git worktree add %TEMP%\wt',
                  r'git worktree add C:\Users\me\AppData\Local\Temp\wt', r'git worktree add "C:\Windows\Temp\wt"',
