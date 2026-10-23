@@ -16,3 +16,14 @@ ask = ["Read(**/.env)", "Read(**/.env.*)"]
 remove_env = ["ENGRAM_CLOUD_TOKEN"]
 # Codex gives stdio MCP servers a minimal environment; these variables are passed through by name.
 pass_env = { engram = ["ENGRAM_CLOUD_TOKEN"] }
+
+[opencode]
+# Native OpenCode approval prompts (permission.bash), matching the Codex execpolicy prompts.
+ask = [
+  "git push*", "ssh *", "scp *", "sftp *", "mosh *",
+  "gh pr create*", "gh pr merge*", "gh pr close*", "gh pr ready*", "gh pr comment*", "gh pr review*",
+  "gh release create*", "gh repo create*", "gh repo delete*", "gh workflow run*",
+  "npm publish*", "pnpm publish*", "yarn publish*",
+  "wrangler deploy*", "wrangler pages deploy*", "netlify deploy*", "fly deploy*", "vercel*",
+  "codegraph index*",
+]

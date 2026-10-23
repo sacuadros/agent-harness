@@ -48,7 +48,7 @@ Read `references/evolution-and-migration.md` for migrations, replacements, data 
 
 ### 8. Hand off implementation
 
-Architecture output informs, but does not replace, Slice Flow in `AGENTS.md`: record decisions that shape the next slice in its `## Now`, not in a separate design document. When implementation is authorized, continue in Slice Flow with its assurance level and existing quality guardrails. Apply relevant Superpowers skills within it; do not introduce another planning authority or repeat equivalent implementation and verification steps.
+Architecture output informs, but does not replace, Slice Flow in `AGENTS.md`: record decisions that shape the next slice in its `## Now`, not in a separate design document. When implementation is authorized, continue in Slice Flow with its assurance level and existing quality guardrails. Apply relevant process skills within it; do not introduce another planning authority or repeat equivalent implementation and verification steps.
 
 ## Result contract
 

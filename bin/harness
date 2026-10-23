@@ -35,6 +35,9 @@ AGENTS = {
                'vars': {'agent': 'Claude Code', 'cmd': '/'}},
     'codex': {'path': '.codex/AGENTS.md', 'skills': '.codex/skills', 'marker': 'codex-native',
               'vars': {'agent': 'Codex', 'cmd': '$'}},
+    # OpenCode reads ~/.claude/skills itself, so it gets no skill copy of its own.
+    'opencode': {'path': '.config/opencode/AGENTS.md', 'skills': None, 'marker': 'opencode-native',
+                 'vars': {'agent': 'OpenCode', 'cmd': '/'}},
 }
 
 
@@ -43,6 +46,7 @@ CONFIGS = {
     '.claude/settings.json': json.loads,
     '.codex/config.toml': tomllib.loads,
     '.codex/hooks.json': json.loads,
+    '.config/opencode/opencode.json': json.loads,
 }
 
 
@@ -103,8 +107,15 @@ def codex_subagent(source, spec):
     return '\n'.join(lines) + f'\ndeveloper_instructions = """\n{fill(source["prompt"], spec)}"""\n'
 
 
+def opencode_subagent(source, spec):
+    lines = ['---', f'description: {json.dumps(spec["description"])}', 'mode: subagent', 'permission:']
+    lines += [f'  {key}: {value}' for key, value in spec['permission'].items()]
+    return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
+
+
 SUBAGENT_FORMATS = {'claude': ('.claude/agents/{}.md', claude_subagent),
-                    'codex': ('.codex/agents/{}.toml', codex_subagent)}
+                    'codex': ('.codex/agents/{}.toml', codex_subagent),
+                    'opencode': ('.config/opencode/agents/{}.md', opencode_subagent)}
 
 
 def fill(text, spec):
@@ -191,6 +202,25 @@ def codex_config(home):
     return text.encode()
 
 
+OPENCODE_CONFIG = '.config/opencode/opencode.json'
+
+
+def opencode_config(home):
+    """Add the harness approval prompts and let the orchestrator call the harness subagents."""
+    data = json.loads((home / OPENCODE_CONFIG).read_text())
+    permission = data.setdefault('permission', {})
+    if isinstance(permission, dict):
+        bash = permission.setdefault('bash', {})
+        if isinstance(bash, dict):
+            for pattern in PERMISSIONS['opencode']['ask']:
+                bash.setdefault(pattern, 'ask')
+    task = data.get('agent', {}).get('orchestrator', {}).get('permission', {}).get('task')
+    if isinstance(task, dict):
+        for f in sorted(SUBAGENTS.glob('*.toml')):
+            task.setdefault(f.stem, 'allow')
+    return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
+
+
 RULES = '.codex/rules/default.rules'
 RULES_BEGIN = '# >>> agent-harness: managed by bin/harness, edit core/hooks/codex.rules\n'
 RULES_END = '# <<< agent-harness\n'
@@ -211,17 +241,32 @@ def codex_rules(home):
     return (before + RULES_BEGIN + block + RULES_END + after).encode()
 
 
+# Optional agents get files only on PCs that have them; Claude and Codex are always managed.
+OPTIONAL_AGENTS = {'opencode': '.config/opencode'}
+
+
+def present(agent, home):
+    return agent not in OPTIONAL_AGENTS or (home / OPTIONAL_AGENTS[agent]).is_dir()
+
+
 def outputs(home):
     """Every file the harness manages, as home-relative path -> bytes."""
     files = {}
     for agent, spec in AGENTS.items():
+        if not present(agent, home):
+            continue
         files[spec['path']] = render(agent).encode()
-        for rel, data in skill_files(agent).items():
+        for rel, data in skill_files(agent).items() if spec['skills'] else ():
             files[f'{spec["skills"]}/{rel}'] = data
     for folder, scripts in HOOK_SCRIPTS.items():
         for script in scripts:
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     files[RULES] = codex_rules(home)
+    if (home / OPENCODE_CONFIG).is_file():
+        try:
+            files[OPENCODE_CONFIG] = opencode_config(home)
+        except ValueError:
+            pass  # unparseable config: `check` reports it as invalid
     if (home / CODEX_CONFIG).is_file():
         try:
             files[CODEX_CONFIG] = codex_config(home)
@@ -235,13 +280,32 @@ def outputs(home):
     for f in sorted(SUBAGENTS.glob('*.toml')):
         source = tomllib.loads(f.read_text())
         for agent, (path, fmt) in SUBAGENT_FORMATS.items():
-            files[path.format(source['name'])] = fmt(source, source[agent]).encode()
+            if present(agent, home):
+                files[path.format(source['name'])] = fmt(source, source[agent]).encode()
+    if present('opencode', home):
+        plugin = (REPO / 'core' / 'opencode' / 'agent-harness.ts').read_text()
+        plugin = plugin.replace('{python}', python_for(home)).replace('{claude_hooks}', str(home / '.claude/hooks'))
+        files['.config/opencode/plugins/agent-harness.ts'] = plugin.encode()
     return files
+
+
+RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text().splitlines()
+           if line.strip() and not line.startswith('#')]
 
 
 def install(home, dry_run=False):
     changed = False
     backup_dir = home / '.agent-harness' / 'backups' / time.strftime('%Y%m%d-%H%M%S')
+    for rel in RETIRED:
+        stale = home / rel
+        if stale.exists():
+            changed = True
+            if dry_run:
+                print(f'would retire {stale}')
+                continue
+            (backup_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(stale), str(backup_dir / rel))
+            print(f'retired {stale} -> {backup_dir / rel}')
     for rel, content in outputs(home).items():
         target = home / rel
         if target.is_file() and target.read_bytes() == content:
@@ -283,6 +347,7 @@ def check(home):
         target = home / rel
         if not target.is_file() or target.read_bytes() != content:
             problems.append(f'drift: {target}')
+    problems += [f'stale: {home / rel}' for rel in RETIRED if (home / rel).exists()]
     for rel in SELFTESTED:
         script = home / rel
         if script.is_file():

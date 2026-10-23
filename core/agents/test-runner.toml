@@ -19,3 +19,8 @@ model = "gpt-6-luna"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 vars = { lead = "primary agent" }
+
+[opencode]
+description = "Proactive validation role for long or noisy independent checks. Use when isolated test output protects the primary context; otherwise launch a bounded generic checks_<scope> mission."
+permission = { edit = "deny", task = "deny", external_directory = "deny", webfetch = "deny", websearch = "deny", skill = "deny" }
+vars = { lead = "primary agent" }

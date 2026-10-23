@@ -1,4 +1,5 @@
 import json
+import re
 import os
 import subprocess
 import sys
@@ -234,6 +235,69 @@ class Hooks(unittest.TestCase):
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'selftest failed: {broken}', result.stdout)
+
+
+class OpenCode(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def test_render_has_every_section_and_its_own_orchestration(self):
+        text = harness('render', 'opencode')
+        self.assertEqual(len(re.findall(r'<!-- opencode-native:[a-z-]+ -->', text)), 10)
+        self.assertIn('## Native OpenCode Orchestration', text)
+        for name in ('implementation-worker', 'independent-reviewer', 'test-runner'):
+            self.assertIn(f'`{name}`', text)
+        self.assertNotIn('Claude Code', text)
+
+    def test_subagents_and_config_merge(self):
+        config = self.home / '.config' / 'opencode' / 'opencode.json'
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({'model': 'x/y', 'agent': {'orchestrator': {
+            'permission': {'task': {'*': 'deny', 'explore': 'allow'}}}}}))
+        harness('install', '--home', str(self.home))
+        agents = self.home / '.config' / 'opencode' / 'agents'
+        reviewer = (agents / 'independent-reviewer.md').read_text()
+        self.assertTrue(reviewer.startswith('---\ndescription: '))
+        self.assertIn('mode: subagent\n', reviewer)
+        self.assertIn('  edit: deny\n', reviewer)
+        self.assertIn('the primary agent', (agents / 'test-runner.md').read_text())
+        self.assertNotIn('  edit: deny\n', (agents / 'implementation-worker.md').read_text())
+        data = json.loads(config.read_text())
+        self.assertEqual(data['model'], 'x/y')
+        task = data['agent']['orchestrator']['permission']['task']
+        self.assertEqual(task['explore'], 'allow')
+        self.assertEqual(task['implementation-worker'], 'allow')
+        self.assertEqual(data['permission']['bash']['git push*'], 'ask')
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_guard_plugin_is_filled_in_and_checked(self):
+        (self.home / '.config' / 'opencode').mkdir(parents=True)
+        harness('install', '--home', str(self.home))
+        plugin = self.home / '.config' / 'opencode' / 'plugins' / 'agent-harness.ts'
+        text = plugin.read_text()
+        self.assertIn(f'"{self.home}/.claude/hooks"', text)
+        self.assertNotIn('{python}', text)
+        plugin.write_text(text + '// hand edit\n')
+        result = run('check', '--home', str(self.home))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'drift: {plugin}', result.stdout)
+
+    def test_stale_skill_copies_are_retired_to_a_backup(self):
+        stale = self.home / '.agents' / 'skills' / 'chained-pr' / 'SKILL.md'
+        stale.parent.mkdir(parents=True)
+        stale.write_text('old\n')
+        harness('install', '--home', str(self.home))
+        self.assertFalse(stale.parent.exists())
+        moved = list((self.home / '.agent-harness' / 'backups').glob('*/.agents/skills/chained-pr/SKILL.md'))
+        self.assertEqual([m.read_text() for m in moved], ['old\n'])
+        stale.parent.mkdir(parents=True)
+        stale.write_text('back again\n')
+        result = run('check', '--home', str(self.home))
+        self.assertIn(f'stale: {stale.parent}', result.stdout)
+
+    def test_nothing_for_opencode_when_it_is_not_installed(self):
+        harness('install', '--home', str(self.home))
+        self.assertFalse((self.home / '.config' / 'opencode').exists())
 
 
 class Doctor(unittest.TestCase):

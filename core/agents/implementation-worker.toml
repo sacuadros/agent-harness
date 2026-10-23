@@ -20,3 +20,8 @@ model = "gpt-6.1-sol"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 vars = { lead = "primary agent" }
+
+[opencode]
+description = "Bounded implementation or fixes with exclusive file ownership, when delegation is warranted."
+permission = { task = "deny", external_directory = "deny", webfetch = "deny", websearch = "deny" }
+vars = { lead = "primary agent" }

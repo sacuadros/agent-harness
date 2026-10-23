@@ -1,0 +1,15 @@
+# Copies the harness replaced. `install` moves them to the backup folder; `check` flags them if they return.
+# OpenCode reads ~/.claude/skills, so its own copies duplicate the harness skills.
+.config/opencode/skills/adaptive-openspec-sdd
+.config/opencode/skills/brand-graphic-design
+.config/opencode/skills/dependency-safety
+.config/opencode/skills/performance-marketing-senior
+.config/opencode/skills/promote-project-convention
+.config/opencode/skills/secure-development
+.config/opencode/skills/seo-copy-senior
+.config/opencode/skills/software-architecture
+.config/opencode/skills/unslop
+# gentle-ai copies; the harness installs these skills into each agent's own folder.
+.agents/skills/work-unit-commits
+.agents/skills/chained-pr
+.agents/skills/cognitive-doc-design
