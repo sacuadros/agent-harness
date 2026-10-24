@@ -146,7 +146,8 @@ def commit_subject(cmd):
         return None
     body = re.sub(r'^\s*["\']?\$\(\s*cat\s*<<-?\s*["\']?(\w+)["\']?\s*\n', '', m.group(1))
     for line in body.splitlines():
-        line = line.strip().strip('"\'')
+        quoted = re.match(r'\s*(["\'])(.*?)\1', line)  # one-line quoted message: stop at its closing quote
+        line = (quoted[2] if quoted and quoted[2].strip() else line).strip().strip('"\'')
         if line:
             return line
     return None
@@ -257,6 +258,12 @@ def selftest():
     assert bash('git commit -m "Update stuff"') == 'deny'
     ps = bash_decision({'tool_name': 'PowerShell', 'tool_input': {'command': 'git commit -m "Update stuff"'}})
     assert ps['hookSpecificOutput']['permissionDecision'] == 'deny'  # Claude's Windows shell tool
+    # The reason quotes only the message, not the commands chained after its closing quote.
+    for chained in ('git commit -m "Update stuff"; git log --oneline', "git commit -m 'Update stuff' && git log"):
+        reason = _bash_decision(chained)['hookSpecificOutput']['permissionDecisionReason']
+        assert reason.endswith('Asunto recibido: "Update stuff"'), reason
+    assert bash('git commit -m "fix: ok"; git log --oneline') is None
+    assert bash('git commit -m "" -m "Update stuff"') == 'deny'  # git drops the empty paragraph
     assert bash('git add -A && git commit -m "fix: handle nil"') is None
     assert bash('git commit --amend --no-edit') is None
     assert bash('python3 -m unittest t && git commit -m "fix: ok"') is None
