@@ -18,7 +18,6 @@ vars = { lead = "main session" }
 description = "Bounded implementation or fixes with exclusive file ownership, when delegation is warranted."
 model = "gpt-6.1-sol"
 model_reasoning_effort = "medium"
-sandbox_mode = "workspace-write"
 vars = { lead = "primary agent" }
 
 [opencode]

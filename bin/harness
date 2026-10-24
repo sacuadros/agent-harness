@@ -116,7 +116,7 @@ def claude_subagent(source, spec):
 def codex_subagent(source, spec):
     lines = [f'{key} = {json.dumps(value)}' for key, value in (
         ('name', source['name']), ('description', spec['description']), ('model', spec['model']),
-        ('model_reasoning_effort', spec['model_reasoning_effort']), ('sandbox_mode', spec['sandbox_mode']))]
+        ('model_reasoning_effort', spec['model_reasoning_effort']))]  # Codex ignores sandbox_mode here
     return '\n'.join(lines) + f'\ndeveloper_instructions = """\n{fill(source["prompt"], spec)}"""\n'
 
 
@@ -221,6 +221,8 @@ def hook_config(agent, home):
             hook['command'] = (subprocess.list2cmdline if os.name == 'nt' else shlex.join)(python + hook.pop('args'))
     data['hooks'] = merge_hooks(data.get('hooks', {}), desired)
     if agent == 'claude':
+        # Subagents may not spawn their own (Claude Code allows 3 levels by default since 2.1.219).
+        data.setdefault('env', {})['CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH'] = '1'
         if cloud := engram_cloud_env(home):
             data.setdefault('env', {}).update(cloud)
         else:  # the server was dropped from config.toml: turn the sync off
@@ -248,6 +250,13 @@ def copilot_hooks(home):
 CODEX_CONFIG = '.codex/config.toml'
 
 
+def codex_shell_excludes(text):
+    """Names in shell_environment_policy.exclude; [] for a missing or malformed value (Codex rejects those)."""
+    policy = tomllib.loads(text).get('shell_environment_policy', {})
+    exclude = policy.get('exclude', []) if isinstance(policy, dict) else []
+    return [n for n in exclude if isinstance(n, str)] if isinstance(exclude, list) else []
+
+
 def codex_config(home):
     """Flip `enabled` inside each managed plugin table; every other byte stays as written."""
     text = (home / CODEX_CONFIG).read_text(encoding='utf-8')
@@ -262,6 +271,26 @@ def codex_config(home):
         if header in text and not re.search(rf'^{re.escape(header)}(?:(?!\[).*\n)*?env_vars\s*=', text, re.M):
             # Codex starts stdio MCP servers with a minimal environment; let these through by name.
             text = text.replace(header, header + f'env_vars = {json.dumps(names)}\n', 1)
+    # Codex hands its whole environment to shell commands; keep the secrets meant only for MCP servers out.
+    secrets = [n for server, names in PERMISSIONS['codex']['pass_env'].items()
+               if f'[mcp_servers.{server}]\n' in text for n in names]
+    current = codex_shell_excludes(text)
+    if missing := [n for n in secrets if n not in current]:
+        line = f'exclude = {json.dumps(current + missing)}\n'
+        header = re.compile(r'^\[shell_environment_policy\][ \t]*(?:#.*)?\n', re.M)
+        existing = re.compile(r'(^\[shell_environment_policy\].*\n(?:(?!\[).*\n)*?)'
+                              r'exclude\s*=\s*(?:\[[^\]]*\]|[^\n]*)[^\n]*\n', re.M)  # arrays may span lines
+        if existing.search(text):
+            candidate = existing.sub(lambda m: m[1] + line, text, count=1)
+        elif found := header.search(text):
+            candidate = text[:found.end()] + line + text[found.end():]
+        else:
+            candidate = text.rstrip('\n') + '\n\n[shell_environment_policy]\n' + line
+        try:
+            if set(secrets) <= set(codex_shell_excludes(candidate)):
+                text = candidate
+        except ValueError:
+            pass  # a layout this cannot edit (dotted keys, inline table): doctor reports it
     table = '[mcp_servers.engram.env]\n'
     def in_table(key):
         return re.compile(rf'(^{re.escape(table)}(?:(?!\[).*\n)*?){re.escape(key)}\s*=.*\n', re.M)
@@ -597,6 +626,24 @@ def doctor(home):
              'codex plugin marketplace upgrade engram && codex plugin add engram@engram')):
         if installed and latest and installed != latest:
             findings.append(f'engram {agent} plugin outdated: {installed} -> {latest} ({fix})')
+    if claude := shutil.which('claude'):  # the terminal CLI; the desktop apps update their own copy
+        try:
+            out = subprocess.run([claude, '--version'], capture_output=True, encoding='utf-8', errors='replace',
+                                 timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ''
+        if (found := re.match(r'\s*(\d+)\.(\d+)\.(\d+)', out)) and tuple(map(int, found.groups())) < (2, 1, 295):
+            findings.append(f'claude code {".".join(found.groups())} ignores onFailure, so a guard that cannot '
+                            'start lets the action through (claude update)')
+    codex = home / CODEX_CONFIG
+    try:
+        exposed = codex.is_file() and 'engram' in tomllib.loads(codex.read_text(encoding='utf-8')).get('mcp_servers', {}) \
+            and 'ENGRAM_CLOUD_TOKEN' not in codex_shell_excludes(codex.read_text(encoding='utf-8'))
+    except ValueError:
+        exposed = False  # unparseable: `check` reports it
+    if exposed:
+        findings.append(f'Codex shell commands inherit ENGRAM_CLOUD_TOKEN: add it to '
+                        f'shell_environment_policy.exclude in {codex}')
     if engram_mcp_add(home):
         findings.append('engram MCP is not registered for Claude Code, so its mem_* tools are missing '
                         '(run `bin/harness install` and restart Claude Code)')

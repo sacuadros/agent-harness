@@ -60,6 +60,17 @@
       ]
     },
     {
+      "matcher": "mcp__.*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python}",
+          "args": ["{claude_hooks}/harness_guards.py", "mcp", "--codex"],
+          "timeout": 5
+        }
+      ]
+    },
+    {
       "matcher": "apply_patch",
       "hooks": [
         {

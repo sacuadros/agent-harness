@@ -29,6 +29,9 @@ def tree(root):
             if f.is_file() and '.bak' not in f.name}
 
 
+SPAWN = {'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '1'}  # install always sets it
+
+
 def harness(*args):
     return subprocess.run([sys.executable, str(HARNESS), *args],
                           capture_output=True, encoding='utf-8', check=True).stdout
@@ -194,6 +197,15 @@ class Subagents(unittest.TestCase):
                     expected = expected.replace(old, new)
                 self.assertEqual((self.home / rel).read_text(encoding='utf-8'), expected, rel)
 
+    def test_codex_agents_claim_no_sandbox(self):
+        # Codex ignores sandbox_mode in agent files, so writing it would promise a limit that does not exist.
+        for name in self.NAMES:
+            self.assertNotIn('sandbox_mode', (self.home / f'.codex/agents/{name}.toml').read_text(encoding='utf-8'))
+
+    def test_claude_subagents_cannot_spawn_subagents(self):
+        settings = json.loads((self.home / '.claude/settings.json').read_text(encoding='utf-8'))
+        self.assertEqual(settings['env']['CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH'], '1')
+
 
 class Hooks(unittest.TestCase):
     SCRIPTS = ('harness_guards.py', 'enforce_memory_graph.py', 'engram_auto_enroll.py')
@@ -236,7 +248,7 @@ class Hooks(unittest.TestCase):
         codex = self.engram_codex_config()
         self.install()
         cloud = {'ENGRAM_CLOUD_SERVER': 'https://engram.example', 'ENGRAM_CLOUD_AUTOSYNC': '1'}
-        self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['env'], {'X': '1', **cloud})
+        self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['env'], {'X': '1', **SPAWN, **cloud})
         self.assertEqual(tomllib.loads(codex.read_text(encoding='utf-8'))['mcp_servers']['engram']['env'], cloud)
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
@@ -258,8 +270,35 @@ class Hooks(unittest.TestCase):
         self.install()
         config.unlink()
         self.install()
-        self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['env'], {'X': '1'})
+        self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['env'], {'X': '1', **SPAWN})
         self.assertEqual(tomllib.loads(codex.read_text(encoding='utf-8'))['mcp_servers']['engram']['env'], {'Y': '2'})
+
+    def test_policy_hooks_block_when_they_fail(self):
+        # Claude blocks when the guard cannot run; the guard itself denies when it errors.
+        self.install()
+        data = json.loads((self.home / '.claude/settings.json').read_text(encoding='utf-8'))
+        for hook in (h for entries in data['hooks'].values() for entry in entries for h in entry['hooks']):
+            guard = any(arg.endswith('harness_guards.py') for arg in hook['args'])
+            self.assertEqual(hook.get('onFailure'), 'block' if guard else None, hook['args'])
+        guard = REPO / 'core/hooks/harness_guards.py'
+        for args in (['bash'], ['bash', '--codex'], ['mcp'], ['backup'], ['bash', '--copilot']):
+            with self.subTest(args=args):
+                result = subprocess.run([sys.executable, str(guard), *args], input='not json',
+                                        capture_output=True, encoding='utf-8')
+                out = json.loads(result.stdout)
+                self.assertEqual(out['hookSpecificOutput']['permissionDecision'], 'deny')
+                if '--copilot' in args:
+                    self.assertEqual(out['permissionDecision'], 'deny')
+
+    def test_guards_cover_mcp_tools_that_run_commands(self):
+        # Desktop Commander and similar MCP servers run shell commands outside the Bash tool.
+        self.install()
+        for rel, args in (('.claude/settings.json', ['mcp']), ('.codex/hooks.json', ['mcp', '--codex'])):
+            data = json.loads((self.home / rel).read_text(encoding='utf-8'))
+            entries = data['hooks']['PreToolUse']
+            matched = [e for e in entries if re.fullmatch(e.get('matcher', ''), 'mcp__desktop-commander__start_process')
+                       and self.commands([e])[0].endswith('harness_guards.py ' + ' '.join(args))]
+            self.assertTrue(matched, rel)
 
     def test_installed_claude_hooks_run_as_written(self):
         # Exactly what Claude Code spawns: command + args with no shell (py -3 on Windows), from a spaced home.
@@ -280,7 +319,7 @@ class Hooks(unittest.TestCase):
                 if argv[-1] == 'bash':
                     self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
                 ran += 1
-        self.assertEqual(ran, 6)
+        self.assertEqual(ran, 7)  # with the MCP guard
 
     def test_claude_hooks_run_without_a_shell(self):
         # Exec form: Claude spawns the interpreter itself, so zsh, Git Bash and PowerShell behave alike.
@@ -324,7 +363,7 @@ class Hooks(unittest.TestCase):
             }})
         self.install()
         data = json.loads(settings.read_text(encoding='utf-8'))
-        self.assertEqual(data['env'], {'X': '1'})
+        self.assertEqual(data['env'], {'X': '1', **SPAWN})
         self.assertEqual(data['hooks']['UserPromptSubmit'], [foreign])
         hooks = (self.home / '.claude' / 'hooks').as_posix()
         self.assertEqual(self.commands(data['hooks']['Stop']), [
@@ -373,7 +412,7 @@ class Hooks(unittest.TestCase):
         self.assertEqual(stop[1], foreign)
         self.assertTrue(self.commands([stop[0]])[0].endswith('/.codex/hooks/engram_auto_enroll.py'))
         self.assertTrue(self.commands([stop[2]])[0].endswith('/.claude/hooks/enforce_memory_graph.py stop'))
-        self.assertEqual(len(hooks['PreToolUse']), 3)
+        self.assertEqual(len(hooks['PreToolUse']), 4)  # with the MCP guard
 
     def test_rules_block_keeps_codex_added_rules(self):
         block = (REPO / 'core' / 'hooks' / 'codex.rules').read_text(encoding='utf-8')
@@ -761,6 +800,17 @@ class Doctor(unittest.TestCase):
         out = self.doctor(PATH=path, CLOUD='not configured', AUTH='missing token')
         self.assertIn('engram cloud is not ready', out)
 
+    @unittest.skipIf(os.name == 'nt', 'the fake claude is a shell script')
+    def test_old_claude_code_lets_failing_guards_through(self):
+        # onFailure: "block" needs Claude Code 2.1.295; older versions ignore it and allow the action.
+        bin_dir = Path(tempfile.mkdtemp())
+        fake = bin_dir / 'claude'
+        fake.write_text('#!/bin/sh\necho "$VERSION (Claude Code)"\n', encoding='utf-8', newline='\n')
+        fake.chmod(0o755)
+        path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
+        self.assertIn('claude code 2.1.283 ignores onFailure', self.doctor(PATH=path, VERSION='2.1.283'))
+        self.assertNotIn('ignores onFailure', self.doctor(PATH=path, VERSION='2.1.310'))
+
     def test_orphan_skill_overrides(self):
         (self.home / '.claude' / 'skills' / 'present').mkdir(parents=True)
         command = self.home / '.claude/plugins/cache/market/tool/1.0/commands/tool-review.md'
@@ -874,6 +924,47 @@ class Secrets(unittest.TestCase):
         data = tomllib.loads(config.read_text(encoding='utf-8'))
         self.assertEqual(data['mcp_servers']['engram']['env_vars'], ['ENGRAM_CLOUD_TOKEN'])
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_codex_shell_commands_do_not_inherit_the_engram_token(self):
+        # Codex passes the whole environment to its shell by default; only the Engram MCP needs the token.
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir(parents=True)
+        engram = '[mcp_servers.engram]\ncommand = "engram"\n'
+        for policy in ('', '\n[shell_environment_policy]\ninherit = "all"\n\n[shell_environment_policy.set ]\nX = "1"\n'):
+            with self.subTest(policy=policy):
+                config.write_text(engram + policy, encoding='utf-8', newline='\n')
+                harness('install', '--home', str(self.home))
+                data = tomllib.loads(config.read_text(encoding='utf-8'))
+                self.assertEqual(data['shell_environment_policy']['exclude'], ['ENGRAM_CLOUD_TOKEN'])
+                self.assertEqual(data['mcp_servers']['engram']['env_vars'], ['ENGRAM_CLOUD_TOKEN'])
+                if policy:
+                    self.assertEqual((data['shell_environment_policy']['inherit'],
+                                      data['shell_environment_policy']['set']), ('all', {'X': '1'}))
+                self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_codex_token_exclude_survives_every_policy_layout(self):
+        # A layout the installer cannot edit must not cost the rest of the Codex config; doctor reports it.
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir(parents=True)
+        engram = '[mcp_servers.engram]\ncommand = "engram"\n'
+        for policy, edited in (('\n[shell_environment_policy]\nexclude = [\n  "AWS_*",\n]\n', True),
+                               ('\n[shell_environment_policy] # mine\ninherit = "all"\n', True),
+                               ('\n[shell_environment_policy]\nexclude = "a"\n', True),
+                               ('shell_environment_policy.inherit = "all"\n', False),
+                               ('shell_environment_policy = "x"\n', False)):
+            with self.subTest(policy=policy):
+                text = policy + engram if not edited else engram + policy
+                config.write_text(text, encoding='utf-8', newline='\n')
+                harness('install', '--home', str(self.home))
+                data = tomllib.loads(config.read_text(encoding='utf-8'))
+                self.assertEqual(data['mcp_servers']['engram']['env_vars'], ['ENGRAM_CLOUD_TOKEN'])
+                policy_value = data['shell_environment_policy']
+                exclude = policy_value.get('exclude', []) if isinstance(policy_value, dict) else []
+                self.assertEqual('ENGRAM_CLOUD_TOKEN' in exclude, edited)
+                if 'AWS_*' in policy:
+                    self.assertEqual(exclude, ['AWS_*', 'ENGRAM_CLOUD_TOKEN'])
+                doctor = run('doctor', '--home', str(self.home)).stdout
+                self.assertEqual('Codex shell commands inherit ENGRAM_CLOUD_TOKEN' in doctor, not edited)
 
     def test_engram_token_leaves_codex_config(self):
         config = self.home / '.codex' / 'config.toml'

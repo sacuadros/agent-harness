@@ -40,7 +40,20 @@
           "type": "command",
           "command": "{python}",
           "args": ["{claude_hooks}/harness_guards.py", "bash"],
-          "timeout": 5
+          "timeout": 5,
+          "onFailure": "block"
+        }
+      ]
+    },
+    {
+      "matcher": "mcp__.*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python}",
+          "args": ["{claude_hooks}/harness_guards.py", "mcp"],
+          "timeout": 5,
+          "onFailure": "block"
         }
       ]
     },
@@ -51,7 +64,8 @@
           "type": "command",
           "command": "{python}",
           "args": ["{claude_hooks}/harness_guards.py", "backup"],
-          "timeout": 5
+          "timeout": 5,
+          "onFailure": "block"
         }
       ]
     }

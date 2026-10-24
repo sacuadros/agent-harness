@@ -17,7 +17,6 @@ vars = { lead = "main session" }
 description = "Proactive validation role for long or noisy independent checks. Use when isolated test output protects the primary context; otherwise launch a bounded generic checks_<scope> mission."
 model = "gpt-6-luna"
 model_reasoning_effort = "high"
-sandbox_mode = "workspace-write"
 vars = { lead = "primary agent" }
 
 [opencode]

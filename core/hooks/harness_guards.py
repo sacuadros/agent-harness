@@ -8,7 +8,7 @@
 Codex (~/.codex/hooks.json): `bash --codex` drops "ask" results, which Codex rejects; the
 prompt cases live in ~/.codex/rules/default.rules. `backup` also reads apply_patch input.
 
-Run with `selftest` to check the rules. Fails open: any unexpected error allows the action.
+Run with `selftest` to check the rules. Fails closed: any unexpected error denies the action.
 Limit: Bash commands that write global config (sed -i, redirects) are not backed up."""
 import json
 import re
@@ -155,9 +155,14 @@ def commit_subject(cmd):
 
 
 def bash_decision(data, codex=False):
-    cmd = data.get('tool_input', {}).get('command', '')
-    out = _bash_decision(cmd)
+    tool_input = data.get('tool_input') if isinstance(data.get('tool_input'), dict) else {}
+    mcp = str(data.get('tool_name', '')).startswith('mcp__')  # e.g. Desktop Commander's start_process
+    cmd = tool_input.get('command') or (tool_input.get('input') if mcp else '')
+    out = _bash_decision(cmd if isinstance(cmd, str) else '')
     if codex and out and out['hookSpecificOutput']['permissionDecision'] == 'ask':
+        if mcp:  # execpolicy rules only see Codex's own shell tool, so nothing would ask
+            return decision('deny', out['hookSpecificOutput']['permissionDecisionReason'] + ' Codex no pide '
+                                    'aprobación en herramientas MCP: córrelo con su shell, que sí la pide.')
         # Codex rejects "ask"; ~/.codex/rules/default.rules prompts, but only for plain forms.
         if any(re.search(PLAIN_SEG + p, cmd) for p in CODEX_PROMPTED):
             return None
@@ -218,15 +223,17 @@ def config_path(path):
 
 
 def edited_paths(data):
-    tool_input = data.get('tool_input', {})
+    tool_input = data.get('tool_input') if isinstance(data.get('tool_input'), dict) else {}
     if data.get('tool_name') != 'apply_patch':
-        return [tool_input.get('file_path') or tool_input.get('notebook_path') or '']
-    cwd = Path(data.get('cwd') or '.')
-    return [str(cwd / p.strip()) for p in PATCH_FILE.findall(tool_input.get('command', ''))]
+        path = tool_input.get('file_path') or tool_input.get('notebook_path') or ''
+        return [path if isinstance(path, str) else '']  # MCP and Copilot tools may send lists or objects
+    cwd = Path(data.get('cwd') if isinstance(data.get('cwd'), str) else '.')
+    patch = tool_input.get('command')
+    return [str(cwd / p.strip()) for p in PATCH_FILE.findall(patch if isinstance(patch, str) else '')]
 
 
 def backup(data, backup_dir=BACKUP_DIR, now=None):
-    session = (data.get('session_id') or 'nosession')[:8]
+    session = re.sub(r'[^\w-]', '', str(data.get('session_id') or ''))[:8] or 'nosession'  # part of a file name
     stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(now))
     targets = []
     for path in edited_paths(data):
@@ -434,6 +441,21 @@ def selftest():
     assert codex('echo $(gh pr create --fill)') == 'deny'
     out = bash_decision({'tool_input': {'command': 'git commit -m "wip"'}}, codex=True)
     assert out['hookSpecificOutput']['permissionDecision'] == 'deny'
+    # MCP tools that run commands (Desktop Commander's start_process, interact_with_process) get the
+    # same rules. Codex execpolicy never sees them, so a remote operation there is denied, not left to it.
+    def mcp(tool_input, codex=False):
+        out = bash_decision({'tool_name': 'mcp__desktop-commander__start_process', 'tool_input': tool_input}, codex)
+        return out and out['hookSpecificOutput']['permissionDecision']
+    assert mcp({'command': 'git push'}) == 'ask' and mcp({'command': 'git push'}, codex=True) == 'deny'
+    assert mcp({'input': 'git commit -m "wip"'}) == 'deny'
+    assert mcp({'command': 'cat ~/.aws/credentials'}, codex=True) == 'deny'
+    assert mcp({'command': 'ls'}, codex=True) is None and mcp({'pid': 3}) is None
+    out = bash_decision({'tool_name': 'mcp__dc__start_process', 'tool_input': {'command': 'codegraph index'}}, True)
+    assert 'codegraph index' in out['hookSpecificOutput']['permissionDecisionReason']  # its own reason, not "remote"
+    # Fail-closed must not block tools whose arguments merely have an odd shape (Copilot backs up every tool).
+    for odd in ({'toolName': 'edit', 'toolArgs': json.dumps({'path': ['a']}), 'sessionId': 's'},
+                {'toolName': 'edit', 'toolArgs': '{}', 'sessionId': 7}, {'toolName': 'x', 'toolArgs': 'not json'}):
+        assert backup(copilot_input(odd), Path(tempfile.mkdtemp())) is None, odd
     # Codex edits arrive as apply_patch text; relative paths resolve against cwd.
     agents = HOME / '.codex' / 'AGENTS.md'
     if agents.is_file():
@@ -454,36 +476,54 @@ def copilot_input(data):
     tool_input = data.get('tool_input')
     if tool_input is None:
         raw = data.get('toolArgs') or '{}'
-        tool_input = json.loads(raw) if isinstance(raw, str) else raw
+        try:
+            tool_input = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:  # a tool whose arguments are not JSON names no command or file
+            tool_input = {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
     tool_input.setdefault('file_path', tool_input.get('filePath') or tool_input.get('path') or '')
     return {**data, 'tool_input': tool_input, 'session_id': data.get('session_id') or data.get('sessionId')}
 
 
-def copilot_output(data):
-    out = bash_decision(copilot_input(data))
-    if not out:
-        return None
+def copilot_reply(out):
     spec = out['hookSpecificOutput']
     return {'permissionDecision': spec['permissionDecision'],
             'permissionDecisionReason': spec['permissionDecisionReason'], **out}
+
+
+def copilot_output(data):
+    out = bash_decision(copilot_input(data))
+    return copilot_reply(out) if out else None
+
+
+def failed(error, copilot):
+    """A policy hook that cannot decide denies: a bug must not open the guard."""
+    out = decision('deny', f'El guard del harness falló ({type(error).__name__}) y bloquea la acción. Revisa '
+                           'el hook con `harness_guards.py selftest` en ~/.claude/hooks.')
+    return copilot_reply(out) if copilot else out
 
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ''
     if mode == 'selftest':
         return selftest()
+    data = {}
     try:
         data = json.loads(sys.stdin.buffer.read())  # bytes: UTF-8 whatever the locale
         if mode == 'bash' and '--copilot' in sys.argv:
             result = copilot_output(data)
         elif mode == 'backup' and ('toolArgs' in data or 'toolName' in data):
             result = backup(copilot_input(data))
-        elif mode == 'bash':
+        elif mode in ('bash', 'mcp'):  # mcp: its own mode, so the installer keeps both hook entries
             result = bash_decision(data, codex='--codex' in sys.argv)
+        elif mode == 'backup':
+            result = backup(data)
         else:
-            result = {'backup': backup}[mode](data)
-    except Exception:
-        return  # fail open: never wedge a session on a hook bug
+            result = None  # an unknown mode is not a failure
+    except Exception as error:
+        copilot = '--copilot' in sys.argv or isinstance(data, dict) and ('toolArgs' in data or 'toolName' in data)
+        result = failed(error, copilot)
     if result:
         print(json.dumps(result))  # ASCII-escaped, so a cp1252 stdout cannot fail
 
