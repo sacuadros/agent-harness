@@ -63,8 +63,9 @@ PLAIN_GIT = re.compile(_GIT + r'''\s[^;&|\n`$!]*$''', re.I)
 # the like change the repo or config, or run a program; a bare --namespace would make `commit` its value.
 GIT_MESSAGE_CMD = re.compile(_GIT + r'''(?:\s+(?:-[pP]|--no-pager|--paginate))*'''
                              r'''\s+(?:commit|tag|notes|merge|stash)(?=\s|$)''', re.I)  # not commit-tree, merge-file
-# -m may follow only flags that take no value: in -Fm or -Sm, m is the option's value and the next word
-# a pathspec. Case matters there; config keys and GIT_SSH_COMMAND ignore it.
+# -m may follow only -a, -q, -s, -v: in -Fm or -Sm, m is the option's value and the next word a pathspec.
+# merge -s takes a strategy, so there the next word is a ref, which git never reads as a file.
+# Case matters there; config keys and GIT_SSH_COMMAND ignore it.
 GIT_LITERAL = re.compile(r'''(?P<lead>(?:^|\s)(?:(?-i:-[aqsv]*m\s*|--message[=\s]\s*)|-c\s+core\.sshCommand=|'''
                          r'''core\.sshCommand\s+|GIT_SSH_COMMAND=))(?P<value>'[^']*'|"[^"\\]*")''', re.I)
 # Only options that cannot run a command, read or write another file, or forward credentials: no -F config,
