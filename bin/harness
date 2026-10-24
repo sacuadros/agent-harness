@@ -228,6 +228,17 @@ def hook_config(agent, home):
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
+def copilot_hooks(home):
+    """Copilot runs `bash` on macOS/Linux and `powershell` on Windows, each one shell string."""
+    data = json.loads((HOOKS / 'copilot.json').read_text(encoding='utf-8')
+                      .replace('{claude_hooks}', (home / '.claude/hooks').as_posix()))
+    shell, join = ('powershell', subprocess.list2cmdline) if os.name == 'nt' else ('bash', shlex.join)
+    for entries in data['hooks'].values():
+        entries[:] = [{(shell if k == 'args' else k): (join(python_for(home) + v) if k == 'args' else v)
+                       for k, v in hook.items()} for hook in entries]
+    return (json.dumps(data, indent=2) + '\n').encode()
+
+
 CODEX_CONFIG = '.codex/config.toml'
 
 
@@ -289,8 +300,8 @@ def opencode_config(home):
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
-# VS Code's user profile on macOS and on Linux.
-VSCODE_USER = ('Library/Application Support/Code/User', '.config/Code/User')
+# VS Code's user profile on macOS, Linux, and Windows.
+VSCODE_USER = ('Library/Application Support/Code/User', '.config/Code/User', 'AppData/Roaming/Code/User')
 
 
 def vscode_user(home):
@@ -339,7 +350,7 @@ def outputs(home):
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     files[RULES] = codex_rules(home)
     user = vscode_user(home)
-    if present('copilot', home) and user and (home / user / 'prompts').is_dir():  # VS Code's editor-only chat
+    if present('copilot', home) and user:  # VS Code's local chat reads profile prompts, not ~/.copilot
         header = "---\napplyTo: '**'\ndescription: agent-harness rules (edit the agent-harness repo)\n---\n\n"
         files[f'{user}/prompts/agent-harness.instructions.md'] = (header + render('copilot')).encode()
     if (home / PI_SETTINGS).is_file():
@@ -368,12 +379,13 @@ def outputs(home):
             if present(agent, home):
                 files[path.format(source['name'])] = fmt(source, source[agent]).encode()
     for agent, source, target in (('opencode', 'opencode/agent-harness.ts', '.config/opencode/plugins/agent-harness.ts'),
-                                  ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts'),
-                                  ('copilot', 'hooks/copilot.json', '.copilot/hooks/agent-harness.json')):
+                                  ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts')):
         if present(agent, home):
             guard = (REPO / 'core' / source).read_text(encoding='utf-8')
             guard = guard.replace('{python}', python_for(home)[0]).replace('{claude_hooks}', (home / '.claude/hooks').as_posix())
             files[target] = guard.encode()
+    if present('copilot', home):
+        files['.copilot/hooks/agent-harness.json'] = copilot_hooks(home)
     return files
 
 

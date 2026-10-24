@@ -526,8 +526,14 @@ class Copilot(unittest.TestCase):
         agent = (self.home / '.copilot' / 'agents' / 'test-runner.agent.md').read_text(encoding='utf-8')
         self.assertTrue(agent.startswith('---\nname: test-runner\ndescription: '))
         hooks = json.loads((self.home / '.copilot' / 'hooks' / 'agent-harness.json').read_text(encoding='utf-8'))
-        commands = [h['bash'] for h in hooks['hooks']['PreToolUse']]
+        # Copilot runs `bash` on macOS/Linux and `powershell` on Windows; one key per PC, with the full interpreter.
+        shell = 'powershell' if os.name == 'nt' else 'bash'
+        commands = [h[shell] for h in hooks['hooks']['PreToolUse']]
+        keys = {key for h in hooks['hooks']['PreToolUse'] for key in h}
+        self.assertEqual(keys & {'bash', 'powershell', 'args'}, {shell})
         self.assertIn(f'{self.home.as_posix()}/.claude/hooks/harness_guards.py bash --copilot', ' '.join(commands))
+        if os.name == 'nt' and shutil.which('py'):
+            self.assertTrue(commands[0].startswith('py -3 '), commands[0])
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
     def test_nothing_for_copilot_when_it_is_not_installed(self):
@@ -554,12 +560,13 @@ class NewPC(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('skipped zstd cases', result.stdout)
 
-    def test_linux_vscode_profile_gets_the_prompt_file(self):
-        (self.home / '.copilot').mkdir()
-        prompts = self.home / '.config' / 'Code' / 'User' / 'prompts'
-        prompts.mkdir(parents=True)
-        harness('install', '--home', str(self.home))
-        self.assertTrue((prompts / 'agent-harness.instructions.md').is_file())
+    def test_linux_and_windows_vscode_profiles_get_the_prompt_file(self):
+        for profile in ('.config/Code/User', 'AppData/Roaming/Code/User'):
+            home = Path(tempfile.mkdtemp())
+            (home / '.copilot').mkdir()
+            (home / profile).mkdir(parents=True)  # no prompts folder yet: VS Code creates it lazily
+            harness('install', '--home', str(home))
+            self.assertTrue((home / profile / 'prompts' / 'agent-harness.instructions.md').is_file(), profile)
 
     def test_readme_commands_and_paths_exist(self):
         readme = (REPO / 'README.md').read_text(encoding='utf-8')

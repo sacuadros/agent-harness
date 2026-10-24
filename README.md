@@ -22,7 +22,7 @@ OpenCode, Pi, and Copilot are managed only on PCs where their config folder alre
 ## Requirements
 
 - macOS, Linux, or Windows 10/11 (native, not WSL), Git, and Python 3.11 or newer. Python 3.14 adds the Codex compressed-transcript checks; on older versions the hook skips them.
-- On Windows the harness manages Claude Code and Codex only; OpenCode, Pi, and Copilot are macOS and Linux for now.
+- On Windows the harness manages Claude Code, Codex, and GitHub Copilot; OpenCode and Pi are macOS and Linux for now.
 - The agents you use, already installed and signed in.
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) and [CodeGraph](https://github.com/colbymchenry/codegraph), which the rules expect.
 
@@ -56,7 +56,8 @@ py -3 bin/harness doctor
 
 - Claude Code runs the hooks directly, with no shell, so they work with or without Git Bash. They also guard its PowerShell tool.
 - To sync Engram, write `engram_cloud_server = "<your server>"` to `$HOME\.agent-harness\config.toml` before `install` (see Per-PC settings), then set the token as in "Engram cloud token (Windows)".
-- Codex runs its hooks through PowerShell, in the ChatGPT app and in the CLI alike. Approve them once in Codex after the first install. Approve them again whenever an update changes a hook command; `bin/harness install` lists `.codex/hooks.json` when that happens.
+- Codex runs its hooks through PowerShell, in the Codex app, the ChatGPT app, the VS Code extension, and the CLI alike. Approve them once in Codex after the first install. Approve them again whenever an update changes a hook command; `bin/harness install` lists `.codex/hooks.json` when that happens.
+- Copilot runs the `powershell` command of a hook on Windows and the `bash` one elsewhere; `install` writes the one for this PC. VS Code's local chat reads the rules from your profile's `prompts` folder (`%APPDATA%\Code\User\prompts`), which `install` creates; Copilot CLI reads `~/.copilot`.
 
 ### Per-PC settings
 
