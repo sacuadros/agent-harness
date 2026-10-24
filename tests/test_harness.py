@@ -221,6 +221,31 @@ class Hooks(unittest.TestCase):
     def commands(self, entries):
         return [' '.join([h['command'], *h.get('args', [])]) for entry in entries for h in entry['hooks']]
 
+    def engram_codex_config(self):
+        codex = self.home / '.codex' / 'config.toml'
+        codex.parent.mkdir(parents=True, exist_ok=True)
+        codex.write_text('[mcp_servers.engram]\ncommand = "engram"\nargs = ["mcp"]\n', encoding='utf-8', newline='\n')
+        return codex
+
+    def test_engram_cloud_settings_come_from_the_pc_config(self):
+        # The server URL is per PC (never in this public repo); every agent needs it plus autosync.
+        (self.home / '.agent-harness').mkdir()
+        (self.home / '.agent-harness' / 'config.toml').write_text(
+            'engram_cloud_server = "https://engram.example"\n', encoding='utf-8', newline='\n')
+        settings = self.write_json('.claude/settings.json', {'env': {'X': '1'}})
+        codex = self.engram_codex_config()
+        self.install()
+        cloud = {'ENGRAM_CLOUD_SERVER': 'https://engram.example', 'ENGRAM_CLOUD_AUTOSYNC': '1'}
+        self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['env'], {'X': '1', **cloud})
+        self.assertEqual(tomllib.loads(codex.read_text(encoding='utf-8'))['mcp_servers']['engram']['env'], cloud)
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_no_engram_cloud_settings_without_a_server(self):
+        codex = self.engram_codex_config()
+        self.install()
+        self.assertNotIn('ENGRAM_CLOUD_SERVER', json.loads((self.home / '.claude' / 'settings.json').read_text(encoding='utf-8')).get('env', {}))
+        self.assertNotIn('env', tomllib.loads(codex.read_text(encoding='utf-8'))['mcp_servers']['engram'])
+
     def test_installed_claude_hooks_run_as_written(self):
         # Exactly what Claude Code spawns: command + args with no shell (py -3 on Windows), from a spaced home.
         home = Path(tempfile.mkdtemp()) / 'with space'
@@ -653,6 +678,23 @@ class Doctor(unittest.TestCase):
                                 capture_output=True, encoding='utf-8', env={**self.env, **env})
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
+
+    @unittest.skipIf(os.name == 'nt', 'the fake engram is a shell script')
+    def test_engram_cloud_status(self):
+        bin_dir = Path(tempfile.mkdtemp())
+        fake = bin_dir / 'engram'
+        fake.write_text('#!/bin/sh\n[ "$1" = cloud ] && printf "Cloud status: %s\\nServer: https://engram.example\\n'
+                        'Auth status: %s\\n" "$CLOUD" "$AUTH"\nexit 0\n', encoding='utf-8', newline='\n')
+        fake.chmod(0o755)
+        (self.home / '.agent-harness').mkdir()
+        (self.home / '.agent-harness' / 'config.toml').write_text(
+            'engram_cloud_server = "https://engram.example"\n', encoding='utf-8', newline='\n')
+        path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
+        out = self.doctor(PATH=path, CLOUD='configured (target=cloud)', AUTH='ready (token provided via ENGRAM_CLOUD_TOKEN)')
+        self.assertIn('engram cloud: configured (target=cloud), server https://engram.example, auth ready', out)
+        self.assertNotIn('not ready', out)
+        out = self.doctor(PATH=path, CLOUD='not configured', AUTH='missing token')
+        self.assertIn('engram cloud is not ready', out)
 
     def test_orphan_skill_overrides(self):
         (self.home / '.claude' / 'skills' / 'present').mkdir(parents=True)

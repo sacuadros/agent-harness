@@ -55,6 +55,7 @@ py -3 bin/harness doctor
 ```
 
 - Claude Code runs the hooks directly, with no shell, so they work with or without Git Bash. They also guard its PowerShell tool.
+- To sync Engram, write `engram_cloud_server = "<your server>"` to `$HOME\.agent-harness\config.toml` before `install` (see Per-PC settings), then set the token as in "Engram cloud token (Windows)".
 - Codex runs its hooks through PowerShell, in the ChatGPT app and in the CLI alike. Approve them once in Codex after the first install. Approve them again whenever an update changes a hook command; `bin/harness install` lists `.codex/hooks.json` when that happens.
 
 ### Per-PC settings
@@ -63,7 +64,10 @@ py -3 bin/harness doctor
 
 ```toml
 python = "/opt/homebrew/bin/python3"   # interpreter for the hooks; default: python3 on PATH, py -3 on Windows
+engram_cloud_server = "https://engram.example.com"   # your Engram cloud server; omit to keep Engram local
 ```
+
+With `engram_cloud_server` set, `bin/harness install` gives Claude Code and Codex `ENGRAM_CLOUD_SERVER` and `ENGRAM_CLOUD_AUTOSYNC=1`. The token never goes in a file; set it as described below. `bin/harness doctor` prints the cloud status and reports a missing token.
 
 ### Engram cloud token (macOS)
 

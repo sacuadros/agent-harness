@@ -155,13 +155,23 @@ HARNESS_SCRIPTS = {s for scripts in HOOK_SCRIPTS.values() for s in scripts}
 SELFTESTED = ('.claude/hooks/harness_guards.py', '.claude/hooks/enforce_memory_graph.py')
 
 
+def pc_config(home):
+    """~/.agent-harness/config.toml: per-PC settings that never go into this repo."""
+    config = home / '.agent-harness' / 'config.toml'
+    return tomllib.loads(config.read_text(encoding='utf-8')) if config.is_file() else {}
+
+
+def engram_cloud_env(home):
+    """Engram cloud needs the server and autosync in every agent; the token comes from the environment."""
+    server = pc_config(home).get('engram_cloud_server')
+    return {'ENGRAM_CLOUD_SERVER': server, 'ENGRAM_CLOUD_AUTOSYNC': '1'} if server else {}
+
+
 def python_for(home):
     """Per-PC interpreter argv: `python` in ~/.agent-harness/config.toml, else py -3 on Windows, else python3."""
-    config = home / '.agent-harness' / 'config.toml'
-    if config.is_file():
-        value = tomllib.loads(config.read_text(encoding='utf-8')).get('python')
-        if value:
-            return [value.replace('\\', '/')]  # Git Bash eats backslashes
+    value = pc_config(home).get('python')
+    if value:
+        return [value.replace('\\', '/')]  # Git Bash eats backslashes
     if os.name == 'nt':  # the launcher survives Python upgrades; python3 there may be the Store stub
         return ['py', '-3'] if shutil.which('py') else [sys.executable.replace('\\', '/')]
     return [shutil.which('python3') or sys.executable]
@@ -208,6 +218,8 @@ def hook_config(agent, home):
             hook['command'] = (subprocess.list2cmdline if os.name == 'nt' else shlex.join)(python + hook.pop('args'))
     data['hooks'] = merge_hooks(data.get('hooks', {}), desired)
     if agent == 'claude':
+        if cloud := engram_cloud_env(home):
+            data.setdefault('env', {}).update(cloud)
         data.setdefault('enabledPlugins', {}).update(PLUGINS['claude'])
         permissions = data.setdefault('permissions', {})
         for kind in ('deny', 'ask'):
@@ -233,6 +245,15 @@ def codex_config(home):
         if header in text and not re.search(rf'^{re.escape(header)}(?:(?!\[).*\n)*?env_vars\s*=', text, re.M):
             # Codex starts stdio MCP servers with a minimal environment; let these through by name.
             text = text.replace(header, header + f'env_vars = {json.dumps(names)}\n', 1)
+    table = '[mcp_servers.engram.env]\n'
+    if (cloud := engram_cloud_env(home)) and '[mcp_servers.engram]\n' in text:
+        if table not in text:
+            text = text.rstrip('\n') + '\n\n' + table
+        for key, value in cloud.items():  # set each key inside that table, leave its other keys alone
+            line = f'{key} = {json.dumps(value)}\n'
+            existing = re.compile(rf'(^{re.escape(table)}(?:(?!\[).*\n)*?){re.escape(key)}\s*=.*\n', re.M)
+            text = existing.sub(lambda m: m[1] + line, text, count=1) if existing.search(text) \
+                else text.replace(table, table + line, 1)
     tomllib.loads(text)  # never write a config Codex could not read
     return text.encode()
 
@@ -523,6 +544,18 @@ def doctor(home):
             findings.append(f'engram {agent} plugin outdated: {installed} -> {latest} ({fix})')
     if update:
         findings.append(f'engram update available: {update} (brew upgrade engram)')
+    if engram := shutil.which('engram'):  # the status names where the token came from, never its value
+        try:
+            status = subprocess.run([engram, 'cloud', 'status'], capture_output=True, encoding='utf-8',
+                                    errors='replace', timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            status = ''
+        field = lambda name: (re.search(rf'^{name}: (.+)$', status, re.M) or [None, '-'])[1]
+        auth = field('Auth status').split(' ')[0]
+        print(f'engram cloud: {field("Cloud status")}, server {field("Server")}, auth {auth}')
+        if engram_cloud_env(home) and auth != 'ready':
+            findings.append('engram cloud is not ready: set ENGRAM_CLOUD_TOKEN for your user '
+                            '(README, "Engram cloud token") and restart the agents')
     for finding in findings:
         print(finding)
     if not findings:
