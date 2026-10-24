@@ -273,6 +273,7 @@ def selftest():
     home = Path(tempfile.mkdtemp())
     (home / '.codegraph').mkdir()
     (home / 'scratch').mkdir()
+    (home / '.git').mkdir()  # Windows: %TEMP% sits inside the real profile, whose ~/.codegraph must not count
     os.environ['HOME'] = os.environ['USERPROFILE'] = str(home)  # Path.home() reads USERPROFILE on Windows
     assert pretool_decision({'tool_name': 'Grep', 'cwd': str(home / 'scratch'),
                              'transcript_path': fresh}) is None
