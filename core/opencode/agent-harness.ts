@@ -3,11 +3,11 @@
 // opencode.json `permission.bash`; this plugin only denies, and it fails open on any error.
 import { spawnSync } from "node:child_process"
 
-const PYTHON = "{python}"
+const PYTHON: string[] = {python}
 const HOOKS = "{claude_hooks}"
 
 function guard(mode: string, payload: object, extra: string[] = []) {
-  const result = spawnSync(PYTHON, [`${HOOKS}/harness_guards.py`, mode, ...extra], {
+  const result = spawnSync(PYTHON[0], [...PYTHON.slice(1), `${HOOKS}/harness_guards.py`, mode, ...extra], {
     input: JSON.stringify(payload),
     encoding: "utf8",
     timeout: 5000,

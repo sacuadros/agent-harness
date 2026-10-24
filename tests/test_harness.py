@@ -447,6 +447,11 @@ class OpenCode(unittest.TestCase):
         text = plugin.read_text(encoding='utf-8')
         self.assertIn(f'"{self.home.as_posix()}/.claude/hooks"', text)
         self.assertNotIn('{python}', text)
+        # The whole interpreter argv, so `py -3` on Windows keeps its -3.
+        python = json.loads(re.search(r'^const PYTHON: string\[\] = (.+)$', text, re.M)[1])
+        self.assertIsInstance(python, list)
+        if os.name == 'nt' and shutil.which('py'):
+            self.assertEqual(python, ['py', '-3'])
         plugin.write_text(text + '// hand edit\n', encoding='utf-8', newline='\n')
         result = run('check', '--home', str(self.home))
         self.assertEqual(result.returncode, 1)

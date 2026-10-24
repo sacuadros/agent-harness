@@ -3,12 +3,12 @@
 // without a UI (print mode) they are blocked. Any error in the guard fails open.
 import { spawnSync } from "node:child_process"
 
-const PYTHON = "{python}"
+const PYTHON: string[] = {python}
 const HOOKS = "{claude_hooks}"
 const SESSION = `pi${Date.now()}` // one backup per file per Pi process
 
 function guard(mode: string, payload: object) {
-  const result = spawnSync(PYTHON, [`${HOOKS}/harness_guards.py`, mode], {
+  const result = spawnSync(PYTHON[0], [...PYTHON.slice(1), `${HOOKS}/harness_guards.py`, mode], {
     input: JSON.stringify(payload),
     encoding: "utf8",
     timeout: 5000,
