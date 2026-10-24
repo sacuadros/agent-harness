@@ -161,6 +161,9 @@ def pc_config(home):
     return tomllib.loads(config.read_text(encoding='utf-8')) if config.is_file() else {}
 
 
+ENGRAM_CLOUD_KEYS = ('ENGRAM_CLOUD_SERVER', 'ENGRAM_CLOUD_AUTOSYNC')
+
+
 def engram_cloud_env(home):
     """Engram cloud needs the server and autosync in every agent; the token comes from the environment."""
     server = pc_config(home).get('engram_cloud_server')
@@ -220,6 +223,9 @@ def hook_config(agent, home):
     if agent == 'claude':
         if cloud := engram_cloud_env(home):
             data.setdefault('env', {}).update(cloud)
+        else:  # the server was dropped from config.toml: turn the sync off
+            for key in ENGRAM_CLOUD_KEYS:
+                data.get('env', {}).pop(key, None)
         data.setdefault('enabledPlugins', {}).update(PLUGINS['claude'])
         permissions = data.setdefault('permissions', {})
         for kind in ('deny', 'ask'):
@@ -257,14 +263,19 @@ def codex_config(home):
             # Codex starts stdio MCP servers with a minimal environment; let these through by name.
             text = text.replace(header, header + f'env_vars = {json.dumps(names)}\n', 1)
     table = '[mcp_servers.engram.env]\n'
+    def in_table(key):
+        return re.compile(rf'(^{re.escape(table)}(?:(?!\[).*\n)*?){re.escape(key)}\s*=.*\n', re.M)
     if (cloud := engram_cloud_env(home)) and '[mcp_servers.engram]\n' in text:
         if table not in text:
             text = text.rstrip('\n') + '\n\n' + table
         for key, value in cloud.items():  # set each key inside that table, leave its other keys alone
             line = f'{key} = {json.dumps(value)}\n'
-            existing = re.compile(rf'(^{re.escape(table)}(?:(?!\[).*\n)*?){re.escape(key)}\s*=.*\n', re.M)
+            existing = in_table(key)
             text = existing.sub(lambda m: m[1] + line, text, count=1) if existing.search(text) \
                 else text.replace(table, table + line, 1)
+    elif not cloud:  # the server was dropped from config.toml: turn the sync off
+        for key in ENGRAM_CLOUD_KEYS:
+            text = in_table(key).sub(lambda m: m[1], text, count=1)
     tomllib.loads(text)  # never write a config Codex could not read
     return text.encode()
 
@@ -389,6 +400,21 @@ def outputs(home):
     return files
 
 
+def engram_mcp_add(home):
+    """`claude mcp add` argv when no Engram MCP reaches Claude Code: its plugin stopped shipping one in 0.1.16."""
+    installed, state = home / '.claude/plugins/installed_plugins.json', home / '.claude.json'
+    engram = shutil.which('engram')
+    try:
+        plugin = (json.loads(installed.read_text(encoding='utf-8')).get('plugins', {}).get('engram@engram') or [{}])[0]
+        servers = json.loads(state.read_text(encoding='utf-8')).get('mcpServers', {}) if state.is_file() else {}
+    except (OSError, ValueError):
+        return None  # no plugin, or Claude is rewriting its own state file: leave it alone
+    if not engram or not plugin.get('installPath') or (Path(plugin['installPath']) / '.mcp.json').is_file() \
+            or 'engram' in servers:
+        return None
+    return ['claude', 'mcp', 'add', '--transport', 'stdio', '--scope', 'user', 'engram', '--', engram, 'mcp', '--tools=agent']
+
+
 RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text(encoding='utf-8').splitlines()
            if line.strip() and not line.startswith('#')]
 
@@ -423,6 +449,23 @@ def install(home, dry_run=False):
         target.write_bytes(content)
         print(f'installed {target}')
         changed = True
+    if add := engram_mcp_add(home):  # Claude owns ~/.claude.json, so its CLI writes the entry
+        changed = True
+        claude = shutil.which('claude')
+        if dry_run:
+            print('would register the Engram MCP for Claude Code')
+        elif not claude:
+            print(f'register the Engram MCP for Claude Code: {shlex.join(add)}')
+        else:
+            saved = backup_dir / '.claude.json'
+            if (home / '.claude.json').is_file():
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(home / '.claude.json', saved)
+                print(f'backed up {home / ".claude.json"} -> {saved}')
+            result = subprocess.run([claude, *add[1:]], capture_output=True, encoding='utf-8', errors='replace',
+                                    timeout=60, env={**os.environ, 'HOME': str(home), 'USERPROFILE': str(home)})
+            print('registered the Engram MCP for Claude Code; restart it' if result.returncode == 0
+                  else f'could not register the Engram MCP: {result.stderr.strip() or result.stdout.strip()}')
     if not changed:
         print('no changes')
 
@@ -554,6 +597,9 @@ def doctor(home):
              'codex plugin marketplace upgrade engram && codex plugin add engram@engram')):
         if installed and latest and installed != latest:
             findings.append(f'engram {agent} plugin outdated: {installed} -> {latest} ({fix})')
+    if engram_mcp_add(home):
+        findings.append('engram MCP is not registered for Claude Code, so its mem_* tools are missing '
+                        '(run `bin/harness install` and restart Claude Code)')
     if update:
         findings.append(f'engram update available: {update} (brew upgrade engram)')
     if engram := shutil.which('engram'):  # the status names where the token came from, never its value

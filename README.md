@@ -68,7 +68,9 @@ python = "/opt/homebrew/bin/python3"   # interpreter for the hooks; default: pyt
 engram_cloud_server = "https://engram.example.com"   # your Engram cloud server; omit to keep Engram local
 ```
 
-With `engram_cloud_server` set, `bin/harness install` gives Claude Code and Codex `ENGRAM_CLOUD_SERVER` and `ENGRAM_CLOUD_AUTOSYNC=1`. The token never goes in a file; set it as described below. `bin/harness doctor` prints the cloud status and reports a missing token.
+With `engram_cloud_server` set, `bin/harness install` gives Claude Code and Codex `ENGRAM_CLOUD_SERVER` and `ENGRAM_CLOUD_AUTOSYNC=1`; without it, install removes both. The token never goes in a file; set it as described below. `bin/harness doctor` prints the cloud status and reports a missing token.
+
+Engram's Claude plugin stopped shipping its MCP server in 0.1.16. When no `engram` server is registered, `bin/harness install` backs up `~/.claude.json` and registers one with `claude mcp add --scope user`. Without the `claude` CLI on PATH, it prints that command for you to run. `bin/harness doctor` reports the missing server.
 
 ### Engram cloud token (macOS)
 
