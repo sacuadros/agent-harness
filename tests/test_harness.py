@@ -246,6 +246,21 @@ class Hooks(unittest.TestCase):
         self.assertNotIn('ENGRAM_CLOUD_SERVER', json.loads((self.home / '.claude' / 'settings.json').read_text(encoding='utf-8')).get('env', {}))
         self.assertNotIn('env', tomllib.loads(codex.read_text(encoding='utf-8'))['mcp_servers']['engram'])
 
+    def test_removing_the_server_turns_engram_cloud_off(self):
+        # Dropping engram_cloud_server must stop the sync, not leave the old server behind.
+        config = self.home / '.agent-harness' / 'config.toml'
+        config.parent.mkdir()
+        config.write_text('engram_cloud_server = "https://engram.example"\n', encoding='utf-8', newline='\n')
+        settings = self.write_json('.claude/settings.json', {'env': {'X': '1'}})
+        codex = self.engram_codex_config()
+        codex.write_text(codex.read_text(encoding='utf-8') + '\n[mcp_servers.engram.env]\nY = "2"\n',
+                         encoding='utf-8', newline='\n')
+        self.install()
+        config.unlink()
+        self.install()
+        self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['env'], {'X': '1'})
+        self.assertEqual(tomllib.loads(codex.read_text(encoding='utf-8'))['mcp_servers']['engram']['env'], {'Y': '2'})
+
     def test_installed_claude_hooks_run_as_written(self):
         # Exactly what Claude Code spawns: command + args with no shell (py -3 on Windows), from a spaced home.
         home = Path(tempfile.mkdtemp()) / 'with space'
@@ -675,6 +690,44 @@ class Portability(unittest.TestCase):
             self.assertNotIn('\\', (home / config).read_text(encoding='utf-8'), config)
 
 
+@unittest.skipIf(os.name == 'nt', 'the fake engram and claude are shell scripts')
+class EngramMcp(unittest.TestCase):
+    # Engram's Claude plugin stopped shipping .mcp.json in 0.1.16; the MCP is now a user-scope server.
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        bin_dir = Path(tempfile.mkdtemp())
+        for name, script in (('engram', 'exit 0\n'),
+                             ('claude', 'echo "$@" >> "$HOME/claude-args"\n'
+                                        'printf \'{"mcpServers": {"engram": {"type": "stdio"}}}\' > "$HOME/.claude.json"\n')):
+            (bin_dir / name).write_text('#!/bin/sh\n' + script, encoding='utf-8', newline='\n')
+            (bin_dir / name).chmod(0o755)
+        self.engram = bin_dir / 'engram'
+        self.env = {**os.environ, 'PATH': os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])}
+        plugin = self.home / '.claude/plugins/cache/engram/engram/0.1.16'
+        plugin.mkdir(parents=True)
+        (self.home / '.claude/plugins/installed_plugins.json').write_text(json.dumps(
+            {'plugins': {'engram@engram': [{'installPath': str(plugin), 'version': '0.1.16'}]}}), encoding='utf-8')
+
+    def run_harness(self, *args):
+        result = subprocess.run([sys.executable, str(HARNESS), *args, '--home', str(self.home)],
+                                capture_output=True, encoding='utf-8', env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_install_registers_the_engram_mcp_once(self):
+        self.assertIn('would register the Engram MCP', self.run_harness('install', '--dry-run'))
+        self.assertFalse((self.home / 'claude-args').exists())
+        self.run_harness('install')
+        self.assertEqual((self.home / 'claude-args').read_text(encoding='utf-8'),
+                         f'mcp add --transport stdio --scope user engram -- {self.engram} mcp --tools=agent\n')
+        self.assertIn('no changes', self.run_harness('install'))
+
+    def test_doctor_reports_a_missing_engram_mcp(self):
+        self.assertIn('engram MCP is not registered for Claude Code', self.run_harness('doctor'))
+        (self.home / '.claude.json').write_text('{"mcpServers": {"engram": {}}}', encoding='utf-8')
+        self.assertNotIn('engram MCP is not registered', self.run_harness('doctor'))
+
+
 class Doctor(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
@@ -820,11 +873,11 @@ class Secrets(unittest.TestCase):
     def test_engram_token_leaves_codex_config(self):
         config = self.home / '.codex' / 'config.toml'
         config.parent.mkdir(parents=True)
-        config.write_text('[mcp_servers.engram.env]\nENGRAM_CLOUD_AUTOSYNC = "1"\n'
+        config.write_text('[mcp_servers.engram.env]\nOTHER = "1"\n'
                           'ENGRAM_CLOUD_TOKEN = "s3cr3t"\n\n[agents]\nenabled = true\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
         self.assertEqual(config.read_text(encoding='utf-8'),
-                         '[mcp_servers.engram.env]\nENGRAM_CLOUD_AUTOSYNC = "1"\n\n[agents]\nenabled = true\n')
+                         '[mcp_servers.engram.env]\nOTHER = "1"\n\n[agents]\nenabled = true\n')
 
 
 class Plugins(unittest.TestCase):

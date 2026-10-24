@@ -59,17 +59,22 @@ USES_KEYS = {'ssh', 'ssh-add', 'ssh-keygen', 'scp', 'sftp', 'kubectl'}
 # substitutions, expansions, bangs (shell aliases), backslashes in double quotes, or stray quotes.
 _GIT = r'''^\s*(?:env\s+)?(?:GIT_SSH_COMMAND=(?:'[^']*'|"[^"]*")\s+)?(?:\S*[\\/])?git(?:\.exe)?'''
 PLAIN_GIT = re.compile(_GIT + r'''\s[^;&|\n`$!]*$''', re.I)
-# Global options before the subcommand: -C/-c with a value, flags without one, or --opt=value. A bare
-# --namespace or --git-dir would take the next word as its value, so `commit` there is not the subcommand.
-GIT_MESSAGE_CMD = re.compile(_GIT + r'''(?:\s+(?:-[Cc]\s+[^\s'"]+|-[pP]|--no-pager|--paginate|--[\w-]+=[^\s'"]+))*'''
-                             r'''\s+(?:commit|tag|notes|merge|stash)\b''', re.I)
-GIT_LITERAL = re.compile(r'''(?P<lead>(?:^|\s)(?:-[a-zA-Z]*m\s*|--message[=\s]\s*|-c\s+core\.sshCommand=|'''
+# Global options before the subcommand: only pager flags. -C, -c, --git-dir, --exec-path, --config-env and
+# the like change the repo or config, or run a program; a bare --namespace would make `commit` its value.
+GIT_MESSAGE_CMD = re.compile(_GIT + r'''(?:\s+(?:-[pP]|--no-pager|--paginate))*'''
+                             r'''\s+(?:commit|tag|notes|merge|stash)(?=\s|$)''', re.I)  # not commit-tree, merge-file
+# -m may follow only flags that take no value: in -Fm or -Sm, m is the option's value and the next word
+# a pathspec. Case matters there; config keys and GIT_SSH_COMMAND ignore it.
+GIT_LITERAL = re.compile(r'''(?P<lead>(?:^|\s)(?:(?-i:-[aqsv]*m\s*|--message[=\s]\s*)|-c\s+core\.sshCommand=|'''
                          r'''core\.sshCommand\s+|GIT_SSH_COMMAND=))(?P<value>'[^']*'|"[^"\\]*")''', re.I)
-# Only options that cannot run a command or read or write another file: no -F config, -E log,
-# ProxyCommand, known_hosts files, or control sockets.
-SSH_ONLY = re.compile(r'''(?i)^(?:\S*[\\/])?ssh(?:\.exe)?(?:\s+(?:-i\s*\S+|-p\s*\d+|-[46AaCKkqTtVvXxYy]+'''
-                      r'''|-o\s*(?:IdentitiesOnly|IdentityFile|StrictHostKeyChecking|BatchMode|ConnectTimeout'''
-                      r'''|Port|User|LogLevel|ServerAliveInterval)=\S+))+\s*$''')
+# Only options that cannot run a command, read or write another file, or forward credentials: no -F config,
+# -E log, ProxyCommand, known_hosts files, control sockets, or -A/-K/-X/-Y forwarding. git runs this command
+# through sh, so values get no shell characters (redirections, globs, quotes, backslashes).
+_SSH_VALUE = r'''[\w./@%:+~-]+'''
+# Flags are case-sensitive (-c takes a cipher, -I loads a PKCS#11 library); names and -o keywords are not.
+SSH_ONLY = re.compile(r'''^(?:\S*[\\/])?(?i:ssh(?:\.exe)?)(?:\s+(?:-i\s*''' + _SSH_VALUE + r'''|-p\s*\d+|-[46aCkqTtVvx]+'''
+                      r'''|-o\s*(?i:IdentitiesOnly|IdentityFile|StrictHostKeyChecking|BatchMode|ConnectTimeout'''
+                      r'''|Port|User|LogLevel|ServerAliveInterval)=''' + _SSH_VALUE + r'''))+\s*$''')
 
 
 def strip_git_literals(cmd):
@@ -80,7 +85,8 @@ def strip_git_literals(cmd):
     def literal(m):
         if 'ssh' in m['lead'].lower():
             return m['lead'] if SSH_ONLY.match(m['value'][1:-1]) else m[0]
-        return m['lead'] if messages else m[0]
+        after_dashes = re.search(r'\s--(?:\s|$)', cmd[:m.start()])  # after --, -m and its value are paths
+        return m['lead'] if messages and not after_dashes else m[0]
     stripped = GIT_LITERAL.sub(literal, cmd)
     return cmd if re.search(r'''["']''', stripped) else stripped  # a stray quote: trust none of them
 KEYCHAIN_SECRET = re.compile(r'(?:^|[\s/;&|(])security\s+(?:find-(?:generic|internet)-password\b.*'
@@ -341,7 +347,17 @@ def selftest():
                    "git -c core.sshCommand='ssh -o ProxyCommand=cat -i ~/.ssh/id_rsa' fetch x:y",
                    "git --namespace commit diff -m '~/.ssh/id_rsa'", "git -c core.sshCommand='ssh -F ~/.aws/credentials' fetch o",
                    "git -c core.sshCommand='ssh -E ~/.aws/credentials' fetch o",
-                   "GIT_SSH_COMMAND='ssh -o UserKnownHostsFile=~/.aws/credentials' git fetch"):
+                   "GIT_SSH_COMMAND='ssh -o UserKnownHostsFile=~/.aws/credentials' git fetch",
+                   # Option audit: git runs the ssh command through sh, so its values must not redirect, and
+                   # agent, GSSAPI, and X11 forwarding hand credentials to the remote host.
+                   "git -c core.sshCommand='ssh -i x<~/.ssh/id_rsa' fetch o",
+                   "GIT_SSH_COMMAND='ssh -o User=me>~/.aws/credentials' git fetch",
+                   "git -c core.sshCommand='ssh -A -i ~/.ssh/id_rsa' fetch o",
+                   "GIT_SSH_COMMAND='ssh -Y -i ~/.ssh/id_rsa' git fetch",
+                   # A literal is a message only after an exact -m, in a plain message subcommand, before --.
+                   "git commit -Fm '~/.ssh/id_rsa'", "git commit -Sm '~/.ssh/id_rsa'",
+                   "git -c core.sshCommand='ssh -I lib.so -i ~/.ssh/id_rsa' fetch o","git -c core.hooksPath=h commit -m '~/.ssh/id_rsa'",
+                   "git commit -- -m '~/.ssh/id_rsa'", "git commit-tree -m '~/.ssh/id_rsa' HEAD"):
         assert bash(secret) == 'deny', secret
     for fine in (r'ssh -i C:\Users\me\.ssh\id_ed25519 host uptime', r'ssh.exe -i ~\.ssh\id_rsa host',
                  r'Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub', r'git -C C:\Users\me\repo status',
@@ -360,7 +376,7 @@ def selftest():
                  "GIT_SSH_COMMAND='ssh -o IdentitiesOnly=yes -i ~/.ssh/id_rsa' git fetch",
                  r"git config core.sshCommand 'C:\Windows\System32\OpenSSH\ssh.exe -i ~/.ssh/id_rsa'",
                  "git --no-pager commit -m 'fix: rotate ~/.aws/credentials'", "git -p commit -m 'docs: ~/.aws'",
-                 "git --git-dir=x commit -m 'docs: ~/.aws'", "git -c core.sshCommand='ssh -4 -p 22 -i ~/.ssh/id_rsa' fetch"):
+                 "git --paginate commit -sm 'docs: ~/.aws'","git -c core.sshCommand='ssh -4 -p 22 -i ~/.ssh/id_rsa' fetch"):
         assert bash(fine) != 'deny', fine
     for temp in (r'git worktree add $env:TEMP\wt feature', r'git worktree add %TEMP%\wt',
                  r'git worktree add C:\Users\me\AppData\Local\Temp\wt', r'git worktree add "C:\Windows\Temp\wt"',
