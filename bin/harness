@@ -429,19 +429,21 @@ def outputs(home):
     return files
 
 
-def engram_mcp_add(home):
-    """`claude mcp add` argv when no Engram MCP reaches Claude Code: its plugin stopped shipping one in 0.1.16."""
+def engram_mcp_commands(home):
+    """`claude mcp` argvs that register the Engram MCP when none reaches Claude Code: its plugin stopped shipping
+    one in 0.1.16. An entry with no command or url starts nothing, so it is removed first; `add` refuses a taken name."""
     installed, state = home / '.claude/plugins/installed_plugins.json', home / '.claude.json'
     engram = shutil.which('engram')
     try:
         plugin = (json.loads(installed.read_text(encoding='utf-8')).get('plugins', {}).get('engram@engram') or [{}])[0]
-        servers = json.loads(state.read_text(encoding='utf-8')).get('mcpServers', {}) if state.is_file() else {}
+        servers = json.loads(state.read_text(encoding='utf-8')).get('mcpServers') or {} if state.is_file() else {}
     except (OSError, ValueError):
         return None  # no plugin, or Claude is rewriting its own state file: leave it alone
     if not engram or not plugin.get('installPath') or (Path(plugin['installPath']) / '.mcp.json').is_file() \
-            or 'engram' in servers:
+            or isinstance(entry := servers.get('engram'), dict) and (entry.get('command') or entry.get('url')):
         return None
-    return ['claude', 'mcp', 'add', '--transport', 'stdio', '--scope', 'user', 'engram', '--', engram, 'mcp', '--tools=agent']
+    add = ['claude', 'mcp', 'add', '--transport', 'stdio', '--scope', 'user', 'engram', '--', engram, 'mcp', '--tools=agent']
+    return [add] if entry is None else [['claude', 'mcp', 'remove', '--scope', 'user', 'engram'], add]
 
 
 RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text(encoding='utf-8').splitlines()
@@ -478,21 +480,24 @@ def install(home, dry_run=False):
         target.write_bytes(content)
         print(f'installed {target}')
         changed = True
-    if add := engram_mcp_add(home):  # Claude owns ~/.claude.json, so its CLI writes the entry
+    if commands := engram_mcp_commands(home):  # Claude owns ~/.claude.json, so its CLI writes the entry
         changed = True
         claude = shutil.which('claude')
         if dry_run:
             print('would register the Engram MCP for Claude Code')
         elif not claude:
-            print(f'register the Engram MCP for Claude Code: {shlex.join(add)}')
+            print(f'register the Engram MCP for Claude Code: {" && ".join(map(shlex.join, commands))}')
         else:
             saved = backup_dir / '.claude.json'
             if (home / '.claude.json').is_file():
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(home / '.claude.json', saved)
                 print(f'backed up {home / ".claude.json"} -> {saved}')
-            result = subprocess.run([claude, *add[1:]], capture_output=True, encoding='utf-8', errors='replace',
-                                    timeout=60, env={**os.environ, 'HOME': str(home), 'USERPROFILE': str(home)})
+            for command in commands:
+                result = subprocess.run([claude, *command[1:]], capture_output=True, encoding='utf-8', errors='replace',
+                                        timeout=60, env={**os.environ, 'HOME': str(home), 'USERPROFILE': str(home)})
+                if result.returncode:
+                    break
             print('registered the Engram MCP for Claude Code; restart it' if result.returncode == 0
                   else f'could not register the Engram MCP: {result.stderr.strip() or result.stdout.strip()}')
     if not changed:
@@ -644,8 +649,9 @@ def doctor(home):
     if exposed:
         findings.append(f'Codex shell commands inherit ENGRAM_CLOUD_TOKEN: add it to '
                         f'shell_environment_policy.exclude in {codex}')
-    if engram_mcp_add(home):
-        findings.append('engram MCP is not registered for Claude Code, so its mem_* tools are missing '
+    if commands := engram_mcp_commands(home):
+        problem = 'is not registered for Claude Code' if len(commands) == 1 else 'for Claude Code has no command'
+        findings.append(f'engram MCP {problem}, so its mem_* tools are missing '
                         '(run `bin/harness install` and restart Claude Code)')
     if update:
         findings.append(f'engram update available: {update} (brew upgrade engram)')

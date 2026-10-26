@@ -742,7 +742,10 @@ class EngramMcp(unittest.TestCase):
         bin_dir = Path(tempfile.mkdtemp())
         for name, script in (('engram', 'exit 0\n'),
                              ('claude', 'echo "$@" >> "$HOME/claude-args"\n'
-                                        'printf \'{"mcpServers": {"engram": {"type": "stdio"}}}\' > "$HOME/.claude.json"\n')):
+                                        '[ "$2" = add ] && printf \'{"mcpServers": {"engram": {"type": "stdio", '
+                                        '"command": "engram"}}}\' > "$HOME/.claude.json"\n'
+                                        '[ "$2" = remove ] && printf \'{"mcpServers": {}}\' > "$HOME/.claude.json"\n'
+                                        'exit 0\n')):
             (bin_dir / name).write_text('#!/bin/sh\n' + script, encoding='utf-8', newline='\n')
             (bin_dir / name).chmod(0o755)
         self.engram = bin_dir / 'engram'
@@ -766,10 +769,21 @@ class EngramMcp(unittest.TestCase):
                          f'mcp add --transport stdio --scope user engram -- {self.engram} mcp --tools=agent\n')
         self.assertIn('no changes', self.run_harness('install'))
 
+    def test_install_repairs_an_engram_entry_without_a_command(self):
+        # An entry left with only its type starts nothing, and `claude mcp add` refuses a name that exists.
+        (self.home / '.claude.json').write_text('{"mcpServers": {"engram": {"type": "stdio"}}}', encoding='utf-8')
+        self.run_harness('install')
+        self.assertEqual((self.home / 'claude-args').read_text(encoding='utf-8'),
+                         'mcp remove --scope user engram\n'
+                         f'mcp add --transport stdio --scope user engram -- {self.engram} mcp --tools=agent\n')
+        self.assertIn('no changes', self.run_harness('install'))
+
     def test_doctor_reports_a_missing_engram_mcp(self):
         self.assertIn('engram MCP is not registered for Claude Code', self.run_harness('doctor'))
-        (self.home / '.claude.json').write_text('{"mcpServers": {"engram": {}}}', encoding='utf-8')
-        self.assertNotIn('engram MCP is not registered', self.run_harness('doctor'))
+        (self.home / '.claude.json').write_text('{"mcpServers": {"engram": {"type": "stdio"}}}', encoding='utf-8')
+        self.assertIn('engram MCP for Claude Code has no command', self.run_harness('doctor'))
+        (self.home / '.claude.json').write_text('{"mcpServers": {"engram": {"command": "engram"}}}', encoding='utf-8')
+        self.assertNotIn('engram MCP', self.run_harness('doctor'))
 
 
 class Doctor(unittest.TestCase):
