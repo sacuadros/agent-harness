@@ -20,3 +20,5 @@ Library/Application Support/Code/User/prompts/gentle-ai.instructions.md
 Library/Application Support/Code/User/prompts/engram.instructions.md
 Library/Application Support/Code/User/prompts/codegraph.instructions.md
 .config/copilot/copilot-instructions.md
+# VS Code's Copilot migration copies the profile rules here; ~/.copilot/copilot-instructions.md already has them.
+.copilot/instructions/agent-harness.instructions.md

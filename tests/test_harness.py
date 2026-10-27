@@ -575,7 +575,12 @@ class Copilot(unittest.TestCase):
         prompts.mkdir(parents=True)
         (prompts / 'gentle-ai.instructions.md').write_text('old\n', encoding='utf-8', newline='\n')
         (prompts / 'sonar-fix.prompt.md').write_text('mine\n', encoding='utf-8', newline='\n')
+        # VS Code's migration copies profile instructions here, beside copilot-instructions.md.
+        migrated = self.home / '.copilot' / 'instructions' / 'agent-harness.instructions.md'
+        migrated.parent.mkdir()
+        migrated.write_text('old\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
+        self.assertFalse(migrated.exists())
         self.assertEqual((self.home / '.copilot' / 'copilot-instructions.md').read_text(encoding='utf-8'),
                          harness('render', 'copilot'))
         local = (prompts / 'agent-harness.instructions.md').read_text(encoding='utf-8')
@@ -777,6 +782,22 @@ class EngramMcp(unittest.TestCase):
                          'mcp remove --scope user engram\n'
                          f'mcp add --transport stdio --scope user engram -- {self.engram} mcp --tools=agent\n')
         self.assertIn('no changes', self.run_harness('install'))
+
+    def test_copilot_gets_engram_and_keeps_its_other_servers(self):
+        # VS Code's Copilot target reads ~/.copilot/mcp-config.json, which Settings Sync does not carry.
+        config = self.home / '.copilot' / 'mcp-config.json'
+        config.parent.mkdir()
+        chrome = {'type': 'local', 'command': 'npx', 'args': ['-y', 'chrome-devtools-mcp@latest'], 'tools': ['*']}
+        config.write_text(json.dumps({'mcpServers': {'chrome-devtools': chrome}}), encoding='utf-8')
+        self.run_harness('install')
+        self.assertEqual(json.loads(config.read_text(encoding='utf-8'))['mcpServers'], {
+            'chrome-devtools': chrome,
+            'engram': {'type': 'local', 'command': str(self.engram), 'args': ['mcp', '--tools=agent'], 'tools': ['*']}})
+        self.assertIn('no changes', self.run_harness('install'))
+        mine = '{"mcpServers": {"engram": {"command": "engram"}}}'  # an entry of the user's own stays as written
+        config.write_text(mine, encoding='utf-8')
+        self.run_harness('install')
+        self.assertEqual(config.read_text(encoding='utf-8'), mine)
 
     def test_doctor_reports_a_missing_engram_mcp(self):
         self.assertIn('engram MCP is not registered for Claude Code', self.run_harness('doctor'))

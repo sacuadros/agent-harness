@@ -60,6 +60,7 @@ CONFIGS = {
     '.codex/hooks.json': json.loads,
     '.config/opencode/opencode.json': json.loads,
     '.pi/agent/settings.json': json.loads,
+    '.copilot/mcp-config.json': json.loads,
 }
 
 
@@ -321,6 +322,20 @@ def pi_settings(home):
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
+COPILOT_MCP = '.copilot/mcp-config.json'
+
+
+def copilot_mcp(home):
+    """Add Engram to Copilot's MCP servers when it is missing; None when there is nothing to add."""
+    path, engram = home / COPILOT_MCP, shutil.which('engram')
+    data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    servers = data.setdefault('mcpServers', {})
+    if 'engram' in servers or not engram:
+        return None  # an entry of the user's own stays as written
+    servers['engram'] = {'type': 'local', 'command': engram, 'args': ['mcp', '--tools=agent'], 'tools': ['*']}
+    return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
+
+
 OPENCODE_CONFIG = '.config/opencode/opencode.json'
 
 
@@ -426,6 +441,11 @@ def outputs(home):
             files[target] = guard.encode()
     if present('copilot', home):
         files['.copilot/hooks/agent-harness.json'] = copilot_hooks(home)
+        try:
+            if mcp := copilot_mcp(home):
+                files[COPILOT_MCP] = mcp
+        except ValueError:
+            pass  # unparseable config: `check` reports it as invalid
     return files
 
 

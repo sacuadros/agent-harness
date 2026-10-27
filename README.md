@@ -58,7 +58,7 @@ py -3 bin/harness doctor
 - Claude Code runs the hooks directly, with no shell, so they work with or without Git Bash. They also guard its PowerShell tool.
 - To sync Engram, write `engram_cloud_server = "<your server>"` to `$HOME\.agent-harness\config.toml` before `install` (see Per-PC settings), then set the token as in "Engram cloud token (Windows)".
 - Codex runs its hooks through PowerShell, in the Codex app, the ChatGPT app, the VS Code extension, and the CLI alike. Approve them once in Codex after the first install. Approve them again whenever an update changes a hook command; `bin/harness install` lists `.codex/hooks.json` when that happens.
-- Copilot runs the `powershell` command of a hook on Windows and the `bash` one elsewhere; `install` writes the one for this PC. VS Code's local chat reads the rules from your profile's `prompts` folder (`%APPDATA%\Code\User\prompts`), which `install` creates; Copilot CLI reads `~/.copilot`.
+- Copilot runs the `powershell` command of a hook on Windows and the `bash` one elsewhere; `install` writes the one for this PC. VS Code's local chat reads the rules from your profile's `prompts` folder (`%APPDATA%\Code\User\prompts`), which `install` creates; Copilot CLI and VS Code's Copilot session target read `~/.copilot`. In VS Code's Migrations view, leave `agent-harness.instructions.md` unchecked: `install` retires a migrated copy, since `copilot-instructions.md` already has those rules. Migrated MCP servers land in `~/.copilot/mcp-config.json`, which Settings Sync does not carry, so migrate them on each PC; `install` adds `engram` there when it is missing and leaves an existing entry and every other server alone.
 
 ### Per-PC settings
 
