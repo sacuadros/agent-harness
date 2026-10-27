@@ -5,7 +5,6 @@
   harness install [--home] [--dry-run] write changed files, backing up what they replace
   harness check [--home]              exit 1 if anything installed drifted or is broken
   harness doctor [--home]             report leftovers and version drift (read-only)
-  harness package [--out]             build one ZIP per skill to upload to the Claude app
 """
 import sys
 
@@ -22,7 +21,6 @@ import shutil
 import subprocess
 import time
 import tomllib
-import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -700,19 +698,6 @@ def doctor(home):
     return 0
 
 
-def package(out):
-    """Claude's chat and Cowork never read ~/.claude/skills: each skill is uploaded as a ZIP of its folder."""
-    out.mkdir(parents=True, exist_ok=True)
-    skills = {}
-    for rel, data in skill_files('claude').items():
-        skills.setdefault(rel.parts[0], {})[rel.as_posix()] = data
-    for name, files in sorted(skills.items()):
-        with zipfile.ZipFile(out / f'{name}.zip', 'w', zipfile.ZIP_DEFLATED) as z:
-            for rel, data in sorted(files.items()):
-                z.writestr(rel, data)
-    print(f'{len(skills)} skills in {out}; upload each ZIP in the Claude app under Customize > Skills')
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='harness')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -722,7 +707,6 @@ def main(argv=None):
     inst.add_argument('--dry-run', action='store_true')
     sub.add_parser('check').add_argument('--home', type=Path, default=Path.home())
     sub.add_parser('doctor').add_argument('--home', type=Path, default=Path.home())
-    sub.add_parser('package').add_argument('--out', type=Path, default=Path.home() / '.agent-harness' / 'claude-app-skills')
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding='utf-8', newline='\n')  # Windows: cp1252 and CRLF by default
@@ -734,8 +718,6 @@ def main(argv=None):
         return check(args.home)
     elif args.command == 'doctor':
         return doctor(args.home)
-    elif args.command == 'package':
-        package(args.out)
 
 
 if __name__ == '__main__':

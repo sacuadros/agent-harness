@@ -9,7 +9,6 @@ import sys
 import tempfile
 import tomllib
 import unittest
-import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -201,21 +200,6 @@ class Skills(unittest.TestCase):
         mine.write_text('third party\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
         self.assertEqual(mine.read_text(encoding='utf-8'), 'third party\n')
-
-
-class ClaudeAppPackages(unittest.TestCase):
-    # Claude's chat and Cowork never read ~/.claude/skills; each skill is uploaded as a ZIP of its folder.
-    def test_one_zip_per_skill_with_its_folder_at_the_root(self):
-        out = Path(tempfile.mkdtemp())
-        harness('package', '--out', str(out))
-        self.assertEqual({z.stem for z in out.glob('*.zip')}, MANAGED_SKILLS)
-        with zipfile.ZipFile(out / 'secure-development.zip') as z:
-            names = z.namelist()
-            self.assertIn('secure-development/SKILL.md', names)
-            self.assertIn('secure-development/references/standards-map.md', names)
-            self.assertFalse([n for n in names if 'openai' in n or not n.startswith('secure-development/')], names)
-            self.assertEqual(z.read('secure-development/SKILL.md'),
-                             (REPO / 'core' / 'skills' / 'secure-development' / 'SKILL.md').read_bytes())
 
 
 class Subagents(unittest.TestCase):

@@ -4,7 +4,7 @@ One source of rules, skills, subagents, and guard hooks for the coding agents I 
 
 | Agent | Instructions | Skills | Subagents | Guards |
 |---|---|---|---|---|
-| Claude Code | `~/.claude/CLAUDE.md` | `~/.claude/skills` | `~/.claude/agents/*.md` | hooks in `~/.claude/settings.json` |
+| Claude Code (CLI and the Claude app's Code tab) | `~/.claude/CLAUDE.md` | `~/.claude/skills` | `~/.claude/agents/*.md` | hooks in `~/.claude/settings.json` |
 | Codex | `~/.codex/AGENTS.md` | `~/.agents/skills` | `~/.codex/agents/*.toml` | `~/.codex/hooks.json` + execpolicy rules |
 | OpenCode | `~/.config/opencode/AGENTS.md` | reads `~/.claude/skills` | `~/.config/opencode/agents/*.md` | plugin + `permission.bash` asks |
 | Pi | `~/.pi/agent/AGENTS.md` | reads `~/.agents/skills` | `~/.pi/agent/agents/*.md` (pi-subagents) | extension with confirmations |
@@ -42,7 +42,7 @@ bin/harness doctor              # read-only report: leftovers, PATH duplicates, 
 
 Codex asks you to trust new hooks the first time it sees them. Approve them once in the Codex app.
 
-The Claude app's chat and Cowork never read `~/.claude/skills`; its Code tab does. To use the skills in chat, run `bin/harness package`, then upload each ZIP from `~/.agent-harness/claude-app-skills` under Customize > Skills (code execution must be on). Upload again after a skill changes.
+The Claude app's Code tab runs Claude Code on the same `~/.claude` (rules, skills, subagents, hooks, MCP servers), so one install covers both. It ships its own Claude Code version, which may differ from the `claude` CLI that `doctor` checks.
 
 ### Windows
 
