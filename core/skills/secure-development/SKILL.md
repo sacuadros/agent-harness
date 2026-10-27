@@ -60,7 +60,16 @@ Place controls where every affected path passes: shared authorization policy, se
 
 Run the smallest checks that prove the invariants. Inspect runtime behavior when static tests cannot prove a boundary. Do not auto-run a full repository scan.
 
-When the user asks for a security scan of changed code or a PR, use Claude Code's built-in `/security-review` command. For a formal threat model or a repository-wide scan, say which dedicated tool is available rather than improvising one.
+When the user asks for a security scan or threat model, use the official tool of the agent you run in:
+
+- Claude Code: the built-in `/security-review` command for changed code or a PR.
+- Codex, through the Codex Security plugin:
+  - changed code or PR: `codex-security:security-diff-scan`;
+  - repository or scoped path: `codex-security:security-scan`;
+  - formal threat model: `codex-security:threat-model`;
+  - supplied finding: `codex-security:validation` or `codex-security:fix-finding`;
+  - structural hardening from evidence: `codex-security:propose-security-hardening`.
+- Any other agent: say which dedicated security tool is available rather than improvising one.
 
 A passing test is not a security scan. A scan is not proof of compliance.
 

@@ -9,10 +9,6 @@
 .config/opencode/skills/seo-copy-senior
 .config/opencode/skills/software-architecture
 .config/opencode/skills/unslop
-# gentle-ai copies; the harness installs these skills into each agent's own folder.
-.agents/skills/work-unit-commits
-.agents/skills/chained-pr
-.agents/skills/cognitive-doc-design
 # Pi: the CodeGraph block now lives in ~/.pi/agent/AGENTS.md with the rest of the harness.
 .pi/agent/APPEND_SYSTEM.md
 # VS Code Copilot: gentle-ai and pre-harness instruction files, replaced by agent-harness.instructions.md.

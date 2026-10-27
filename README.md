@@ -5,12 +5,14 @@ One source of rules, skills, subagents, and guard hooks for the coding agents I 
 | Agent | Instructions | Skills | Subagents | Guards |
 |---|---|---|---|---|
 | Claude Code | `~/.claude/CLAUDE.md` | `~/.claude/skills` | `~/.claude/agents/*.md` | hooks in `~/.claude/settings.json` |
-| Codex | `~/.codex/AGENTS.md` | `~/.codex/skills` | `~/.codex/agents/*.toml` | `~/.codex/hooks.json` + execpolicy rules |
+| Codex | `~/.codex/AGENTS.md` | `~/.agents/skills` | `~/.codex/agents/*.toml` | `~/.codex/hooks.json` + execpolicy rules |
 | OpenCode | `~/.config/opencode/AGENTS.md` | reads `~/.claude/skills` | `~/.config/opencode/agents/*.md` | plugin + `permission.bash` asks |
-| Pi | `~/.pi/agent/AGENTS.md` | reads `~/.claude/skills` | `~/.pi/agent/agents/*.md` (pi-subagents) | extension with confirmations |
-| GitHub Copilot | `~/.copilot/copilot-instructions.md` and the VS Code prompts folder | reads `~/.claude/skills` | `~/.copilot/agents/*.agent.md` | `~/.copilot/hooks/agent-harness.json` |
+| Pi | `~/.pi/agent/AGENTS.md` | reads `~/.agents/skills` | `~/.pi/agent/agents/*.md` (pi-subagents) | extension with confirmations |
+| GitHub Copilot | `~/.copilot/copilot-instructions.md` and the VS Code prompts folder | reads `~/.agents/skills` | `~/.copilot/agents/*.agent.md` | `~/.copilot/hooks/agent-harness.json` |
 
 OpenCode, Pi, and Copilot are managed only on PCs where their config folder already exists.
+
+Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` removes the `~/.claude/skills` entry earlier versions added to Pi's `skills` setting, so a third-party skill that lives only in `~/.claude/skills` no longer reaches Pi; install it in `~/.agents/skills` too. OpenCode reads both folders and sees each harness skill twice, with the same content.
 
 ## What the harness enforces
 
@@ -39,6 +41,8 @@ bin/harness doctor              # read-only report: leftovers, PATH duplicates, 
 ```
 
 Codex asks you to trust new hooks the first time it sees them. Approve them once in the Codex app.
+
+The Claude app's chat and Cowork never read `~/.claude/skills`; its Code tab does. To use the skills in chat, run `bin/harness package`, then upload each ZIP from `~/.agent-harness/claude-app-skills` under Customize > Skills (code execution must be on). Upload again after a skill changes.
 
 ### Windows
 

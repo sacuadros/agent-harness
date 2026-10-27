@@ -5,6 +5,7 @@
   harness install [--home] [--dry-run] write changed files, backing up what they replace
   harness check [--home]              exit 1 if anything installed drifted or is broken
   harness doctor [--home]             report leftovers and version drift (read-only)
+  harness package [--out]             build one ZIP per skill to upload to the Claude app
 """
 import sys
 
@@ -21,6 +22,7 @@ import shutil
 import subprocess
 import time
 import tomllib
+import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -39,15 +41,16 @@ HOOK_SCRIPTS = {
 AGENTS = {
     'claude': {'path': '.claude/CLAUDE.md', 'skills': '.claude/skills', 'marker': 'claude-native',
                'vars': {'agent': 'Claude Code', 'cmd': '/'}},
-    'codex': {'path': '.codex/AGENTS.md', 'skills': '.codex/skills', 'marker': 'codex-native',
+    # ~/.agents/skills is Codex's documented user folder (~/.codex/skills is deprecated); Copilot and Pi read it too.
+    'codex': {'path': '.codex/AGENTS.md', 'skills': '.agents/skills', 'marker': 'codex-native',
               'vars': {'agent': 'Codex', 'cmd': '$'}},
-    # OpenCode reads ~/.claude/skills itself, so it gets no skill copy of its own.
+    # OpenCode reads ~/.claude/skills and ~/.agents/skills itself, so it gets no copy of its own.
     'opencode': {'path': '.config/opencode/AGENTS.md', 'skills': None, 'marker': 'opencode-native',
                  'vars': {'agent': 'OpenCode', 'cmd': '/'}},
-    # Copilot reads ~/.claude/skills itself.
+    # Copilot reads ~/.agents/skills itself.
     'copilot': {'path': '.copilot/copilot-instructions.md', 'skills': None, 'marker': 'copilot-native',
                 'vars': {'agent': 'GitHub Copilot', 'cmd': '/'}},
-    # Pi reads ~/.claude/skills through `skills` in its settings.json.
+    # Pi reads ~/.agents/skills itself.
     'pi': {'path': '.pi/agent/AGENTS.md', 'skills': None, 'marker': 'pi-native',
            'vars': {'agent': 'Pi', 'cmd': '/skill:'}},
 }
@@ -129,7 +132,9 @@ def opencode_subagent(source, spec):
 
 def pi_subagent(source, spec):
     lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}',
-             f'tools: {spec["tools"]}']
+             f'tools: {spec["tools"]}',
+             # pi-subagents strips AGENTS.md and the skills catalog from user agents unless asked.
+             'inheritProjectContext: true', 'inheritSkills: true']
     return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
 
 
@@ -314,11 +319,10 @@ PI_SETTINGS = '.pi/agent/settings.json'
 
 
 def pi_settings(home):
-    """Point Pi at the harness skills in ~/.claude/skills; keep everything else."""
+    """Drop the ~/.claude/skills entry earlier installs added: Pi reads ~/.agents/skills itself. Keep everything else."""
     data = json.loads((home / PI_SETTINGS).read_text(encoding='utf-8'))
-    skills = data.setdefault('skills', [])
-    if '~/.claude/skills' not in skills:
-        skills.append('~/.claude/skills')
+    if isinstance(data.get('skills'), list) and '~/.claude/skills' in data['skills']:
+        data['skills'].remove('~/.claude/skills')
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
@@ -468,6 +472,8 @@ def engram_mcp_commands(home):
 
 RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text(encoding='utf-8').splitlines()
            if line.strip() and not line.startswith('#')]
+# Codex skills moved to ~/.agents/skills; the old ~/.codex/skills copies would load twice.
+RETIRED += [f'.codex/skills/{d.name}' for d in sorted(SKILLS.iterdir()) if d.is_dir()]
 
 
 def install(home, dry_run=False):
@@ -694,6 +700,19 @@ def doctor(home):
     return 0
 
 
+def package(out):
+    """Claude's chat and Cowork never read ~/.claude/skills: each skill is uploaded as a ZIP of its folder."""
+    out.mkdir(parents=True, exist_ok=True)
+    skills = {}
+    for rel, data in skill_files('claude').items():
+        skills.setdefault(rel.parts[0], {})[rel.as_posix()] = data
+    for name, files in sorted(skills.items()):
+        with zipfile.ZipFile(out / f'{name}.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+            for rel, data in sorted(files.items()):
+                z.writestr(rel, data)
+    print(f'{len(skills)} skills in {out}; upload each ZIP in the Claude app under Customize > Skills')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='harness')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -703,6 +722,7 @@ def main(argv=None):
     inst.add_argument('--dry-run', action='store_true')
     sub.add_parser('check').add_argument('--home', type=Path, default=Path.home())
     sub.add_parser('doctor').add_argument('--home', type=Path, default=Path.home())
+    sub.add_parser('package').add_argument('--out', type=Path, default=Path.home() / '.agent-harness' / 'claude-app-skills')
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding='utf-8', newline='\n')  # Windows: cp1252 and CRLF by default
@@ -714,6 +734,8 @@ def main(argv=None):
         return check(args.home)
     elif args.command == 'doctor':
         return doctor(args.home)
+    elif args.command == 'package':
+        package(args.out)
 
 
 if __name__ == '__main__':
