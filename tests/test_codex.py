@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.test_harness import HARNESS, REPO, harness, load_hook, run
+from tests.test_harness import HARNESS, harness, load_hook, run
 
 
 class CodexOnly(unittest.TestCase):
@@ -63,13 +63,22 @@ class CodexOnly(unittest.TestCase):
         self.assertEqual([path.read_bytes() for path in backups], [b'old Codex copy'])
 
     def test_relative_home_installs_absolute_hook_paths(self):
-        relative = os.path.relpath(self.home, REPO)
-        harness('install', '--agent', 'codex', '--home', relative)
+        subprocess.run([sys.executable, str(HARNESS), 'install', '--agent', 'codex',
+                        '--home', self.home.name], cwd=self.home.parent,
+                       capture_output=True, text=True, check=True)
         hooks = json.loads((self.home / '.codex/hooks.json').read_text(encoding='utf-8'))['hooks']
         for entries in hooks.values():
             for entry in entries:
                 for handler in entry['hooks']:
                     self.assertIn(self.home.as_posix(), handler['command'])
+
+    def test_cli_preserves_absolute_home_alias_spelling(self):
+        main = runpy.run_path(str(HARNESS))['main']
+        installed = []
+        with mock.patch.dict(main.__globals__, {'install': lambda home, *args: installed.append(home)}), \
+                mock.patch.object(Path, 'resolve', return_value=self.home / 'canonical-alias'):
+            main(['install', '--agent', 'codex', '--home', str(self.home)])
+        self.assertEqual(installed, [self.home])
 
     def test_engram_env_merge_handles_existing_values_and_quoted_tables(self):
         config = self.home / '.codex/config.toml'

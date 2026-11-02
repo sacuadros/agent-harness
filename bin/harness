@@ -971,7 +971,7 @@ def main(argv=None):
     diagnosing.add_argument('--agent', choices=['codex'])
     args = parser.parse_args(argv)
     if hasattr(args, 'home'):
-        args.home = args.home.resolve()
+        args.home = Path(os.path.abspath(args.home))
     if getattr(args, 'runtime', False) and args.agent != 'codex':
         parser.error('--runtime requires --agent codex')
     for stream in (sys.stdout, sys.stderr):
