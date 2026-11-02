@@ -15,10 +15,12 @@ if sys.version_info < (3, 11):  # before importing tomllib, which arrived in 3.1
 import argparse
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 import tomllib
 from pathlib import Path
@@ -210,12 +212,13 @@ def merge_hooks(current, desired):
     return merged
 
 
-def hook_config(agent, home):
+def hook_config(agent, home, standalone=False):
     path = home / HOOK_CONFIGS[agent]
     data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
     template = (HOOKS / f'{agent}.json').read_text(encoding='utf-8')
     python = python_for(home)
-    for key, value in {'python': ' '.join(python), 'claude_hooks': (home / '.claude/hooks').as_posix(),
+    for key, value in {'python': ' '.join(python),
+                       'claude_hooks': (home / ('.codex/hooks' if standalone else '.claude/hooks')).as_posix(),
                        'codex_hooks': (home / '.codex/hooks').as_posix()}.items():
         template = template.replace('{' + key + '}', value)
     desired = json.loads(template)
@@ -262,9 +265,74 @@ def codex_shell_excludes(text):
     return [n for n in exclude if isinstance(n, str)] if isinstance(exclude, list) else []
 
 
-def codex_config(home):
-    """Flip `enabled` inside each managed plugin table; every other byte stays as written."""
-    text = (home / CODEX_CONFIG).read_text(encoding='utf-8')
+def toml_literal(value):
+    if isinstance(value, dict):
+        return '{' + ', '.join(f'{json.dumps(k)} = {toml_literal(v)}' for k, v in value.items()) + '}'
+    if isinstance(value, list):
+        return '[' + ', '.join(map(toml_literal, value)) + ']'
+    return json.dumps(value, ensure_ascii=False)
+
+
+def table_value(text, path, key, value):
+    """Change one managed TOML assignment, keeping unrelated tables and fields intact."""
+    parts = [f'(?:{re.escape(p)}|"{re.escape(p)}"|\'{re.escape(p)}\')' for p in path]
+    header = re.search(r'^[ \t]*\[[ \t]*' + r'[ \t]*\.[ \t]*'.join(parts)
+                       + r'[ \t]*\][ \t]*(?:#.*)?(?:\n|$)', text, re.M)
+    if not header:
+        if value is None:
+            return text
+        # An inline/dotted representation cannot be safely extended as a new table.
+        existing = tomllib.loads(text)
+        for part in path:
+            existing = existing.get(part, {}) if isinstance(existing, dict) else {}
+        if existing:
+            raise ValueError(f'cannot safely edit inline TOML table {".".join(path)}')
+        return text.rstrip('\n') + '\n\n[' + '.'.join(path) + ']\n' + f'{key} = {toml_literal(value)}\n'
+    following = re.search(r'^[ \t]*\[[^\n]+\][ \t]*(?:#.*)?$', text[header.end():], re.M)
+    end = header.end() + following.start() if following else len(text)
+    body = text[header.end():end]
+    field = re.search(r'^[ \t]*(?:' + re.escape(key) + '|"' + re.escape(key)
+                      + '"|\'' + re.escape(key) + r"')[ \t]*=", body, re.M)
+    line = f'{key} = {toml_literal(value)}\n' if value is not None else ''
+    if not field:
+        return text[:header.end()] + line + text[header.end():]
+    statement = ''
+    for part in body[field.start():].splitlines(keepends=True):
+        statement += part
+        try:
+            tomllib.loads(statement)
+        except ValueError:
+            continue  # a multiline array or string is not complete yet
+        start = header.end() + field.start()
+        return text[:start] + line + text[start + len(statement):]
+    raise ValueError(f'cannot parse managed TOML field {key}')
+
+
+def cli_argv(name, *args):
+    """Resolve upstream CLIs, including npm's Windows batch entry points."""
+    command = shutil.which(name)
+    if not command:
+        return None
+    if os.name == 'nt' and Path(command).suffix.lower() in ('.cmd', '.bat'):
+        return [shutil.which('cmd.exe') or 'cmd.exe', '/d', '/c', command, *args]
+    return [command, *args]
+
+
+def codex_config(home, register=False):
+    """Merge managed Codex fields without rewriting unrelated settings."""
+    path = home / CODEX_CONFIG
+    text = path.read_text(encoding='utf-8') if path.is_file() else ''
+    if register:
+        for name, args in (('engram', ('mcp', '--tools=agent')), ('codegraph', ('serve', '--mcp'))):
+            existing = tomllib.loads(text).get('mcp_servers', {}).get(name)
+            if existing is not None:
+                command = existing.get('command', '')
+                if os.name == 'nt' and '/' in command and command.rsplit('/', 1)[-1].lower() == 'cmd.exe':
+                    text = table_value(text, ('mcp_servers', name), 'command', command.replace('/', '\\'))
+                continue  # user entries, including disabled/remote ones, stay theirs
+            if command := cli_argv(name, *args):
+                text = table_value(text, ('mcp_servers', name), 'command', command[0])
+                text = table_value(text, ('mcp_servers', name), 'args', command[1:])
     for plugin, enabled in PLUGINS['codex'].items():
         table = re.escape(f'[plugins."{plugin}"]')
         text = re.sub(rf'(^{table}\n(?:(?!\[).*\n)*?)enabled = (?:true|false)\n',
@@ -272,13 +340,18 @@ def codex_config(home):
     for key in PERMISSIONS['codex']['remove_env']:  # secrets come from the environment instead
         text = re.sub(rf'^{re.escape(key)}\s*=.*\n', '', text, flags=re.M)
     for server, names in PERMISSIONS['codex']['pass_env'].items():
-        header = f'[mcp_servers.{server}]\n'
-        if header in text and not re.search(rf'^{re.escape(header)}(?:(?!\[).*\n)*?env_vars\s*=', text, re.M):
+        entry = tomllib.loads(text).get('mcp_servers', {}).get(server)
+        if isinstance(entry, dict) and entry.get('command'):
             # Codex starts stdio MCP servers with a minimal environment; let these through by name.
-            text = text.replace(header, header + f'env_vars = {json.dumps(names)}\n', 1)
+            current = entry.get('env_vars', [])
+            if not isinstance(current, list) or any(not isinstance(v, (str, dict)) for v in current):
+                raise ValueError(f'invalid env_vars for MCP server {server}')
+            present = {v if isinstance(v, str) else v.get('name') for v in current}
+            if missing := [name for name in names if name not in present]:
+                text = table_value(text, ('mcp_servers', server), 'env_vars', current + missing)
     # Codex hands its whole environment to shell commands; keep the secrets meant only for MCP servers out.
     secrets = [n for server, names in PERMISSIONS['codex']['pass_env'].items()
-               if f'[mcp_servers.{server}]\n' in text for n in names]
+               if tomllib.loads(text).get('mcp_servers', {}).get(server, {}).get('command') for n in names]
     current = codex_shell_excludes(text)
     if missing := [n for n in secrets if n not in current]:
         line = f'exclude = {json.dumps(current + missing)}\n'
@@ -296,20 +369,10 @@ def codex_config(home):
                 text = candidate
         except ValueError:
             pass  # a layout this cannot edit (dotted keys, inline table): doctor reports it
-    table = '[mcp_servers.engram.env]\n'
-    def in_table(key):
-        return re.compile(rf'(^{re.escape(table)}(?:(?!\[).*\n)*?){re.escape(key)}\s*=.*\n', re.M)
-    if (cloud := engram_cloud_env(home)) and '[mcp_servers.engram]\n' in text:
-        if table not in text:
-            text = text.rstrip('\n') + '\n\n' + table
-        for key, value in cloud.items():  # set each key inside that table, leave its other keys alone
-            line = f'{key} = {json.dumps(value)}\n'
-            existing = in_table(key)
-            text = existing.sub(lambda m: m[1] + line, text, count=1) if existing.search(text) \
-                else text.replace(table, table + line, 1)
-    elif not cloud:  # the server was dropped from config.toml: turn the sync off
+    cloud = engram_cloud_env(home)
+    if tomllib.loads(text).get('mcp_servers', {}).get('engram', {}).get('command'):
         for key in ENGRAM_CLOUD_KEYS:
-            text = in_table(key).sub(lambda m: m[1], text, count=1)
+            text = table_value(text, ('mcp_servers', 'engram', 'env'), key, cloud.get(key))
     tomllib.loads(text)  # never write a config Codex could not read
     return text.encode()
 
@@ -394,55 +457,62 @@ def present(agent, home):
     return agent not in OPTIONAL_AGENTS or (home / OPTIONAL_AGENTS[agent]).is_dir()
 
 
-def outputs(home):
+def outputs(home, agent=None):
     """Every file the harness manages, as home-relative path -> bytes."""
     files = {}
-    for agent, spec in AGENTS.items():
-        if not present(agent, home):
+    selected = [agent] if agent else AGENTS
+    for name, spec in AGENTS.items():
+        if name not in selected or not present(name, home):
             continue
-        files[spec['path']] = render(agent).encode()
-        for rel, data in skill_files(agent).items() if spec['skills'] else ():
+        files[spec['path']] = render(name).encode()
+        for rel, data in skill_files(name).items() if spec['skills'] else ():
             files[f'{spec["skills"]}/{rel}'] = data
     for folder, scripts in HOOK_SCRIPTS.items():
+        if agent == 'codex':
+            if folder != '.codex/hooks':
+                continue
+            scripts = HOOK_SCRIPTS['.claude/hooks']
         for script in scripts:
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     files[RULES] = codex_rules(home)
     user = vscode_user(home)
-    if present('copilot', home) and user:  # VS Code's local chat reads profile prompts, not ~/.copilot
+    if 'copilot' in selected and present('copilot', home) and user:  # VS Code's local chat reads profile prompts
         header = "---\napplyTo: '**'\ndescription: agent-harness rules (edit the agent-harness repo)\n---\n\n"
         files[f'{user}/prompts/agent-harness.instructions.md'] = (header + render('copilot')).encode()
-    if (home / PI_SETTINGS).is_file():
+    if 'pi' in selected and (home / PI_SETTINGS).is_file():
         try:
             files[PI_SETTINGS] = pi_settings(home)
         except ValueError:
             pass  # unparseable config: `check` reports it as invalid
-    if (home / OPENCODE_CONFIG).is_file():
+    if 'opencode' in selected and (home / OPENCODE_CONFIG).is_file():
         try:
             files[OPENCODE_CONFIG] = opencode_config(home)
         except ValueError:
             pass  # unparseable config: `check` reports it as invalid
-    if (home / CODEX_CONFIG).is_file():
+    if selected == ['codex'] or (home / CODEX_CONFIG).is_file():
         try:
-            files[CODEX_CONFIG] = codex_config(home)
+            files[CODEX_CONFIG] = codex_config(home, register=selected == ['codex'])
         except ValueError:
             pass  # unparseable config: `check` reports it as invalid
     for agent, rel in HOOK_CONFIGS.items():
+        if agent not in selected:
+            continue
         try:
-            files[rel] = hook_config(agent, home)
+            files[rel] = hook_config(agent, home, standalone=selected == ['codex'])
         except ValueError:
             pass  # unparseable config: never overwrite it; `check` reports it as invalid
     for f in sorted(SUBAGENTS.glob('*.toml')):
         source = tomllib.loads(f.read_text(encoding='utf-8'))
         for agent, (path, fmt) in SUBAGENT_FORMATS.items():
-            if present(agent, home):
+            if agent in selected and present(agent, home):
                 files[path.format(source['name'])] = fmt(source, source[agent]).encode()
     for agent, source, target in (('opencode', 'opencode/agent-harness.ts', '.config/opencode/plugins/agent-harness.ts'),
                                   ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts')):
-        if present(agent, home):
+        if agent in selected and present(agent, home):
             guard = (REPO / 'core' / source).read_text(encoding='utf-8')
             guard = guard.replace('{python}', json.dumps(python_for(home))).replace('{claude_hooks}', (home / '.claude/hooks').as_posix())
             files[target] = guard.encode()
-    if present('copilot', home):
+    if 'copilot' in selected and present('copilot', home):
         files['.copilot/hooks/agent-harness.json'] = copilot_hooks(home)
         try:
             if mcp := copilot_mcp(home):
@@ -475,10 +545,14 @@ RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text(en
 RETIRED += [f'.codex/skills/{d.name}' for d in sorted(SKILLS.iterdir()) if d.is_dir()]
 
 
-def install(home, dry_run=False):
+def retired_paths(agent=None):
+    return [rel for rel in RETIRED if agent is None or rel.startswith('.codex/')]
+
+
+def install(home, dry_run=False, agent=None):
     changed = False
     backup_dir = home / '.agent-harness' / 'backups' / time.strftime('%Y%m%d-%H%M%S')
-    for rel in RETIRED:
+    for rel in retired_paths(agent):
         stale = home / rel
         if stale.exists():
             changed = True
@@ -488,7 +562,7 @@ def install(home, dry_run=False):
             (backup_dir / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(stale), str(backup_dir / rel))
             print(f'retired {stale} -> {backup_dir / rel}')
-    for rel, content in outputs(home).items():
+    for rel, content in outputs(home, agent).items():
         target = home / rel
         if target.is_file() and target.read_bytes() == content:
             continue
@@ -507,7 +581,7 @@ def install(home, dry_run=False):
         if rel == HOOK_CONFIGS['codex']:
             print('Codex skips a changed hook until you trust it again in /hooks')
         changed = True
-    if commands := engram_mcp_commands(home):  # Claude owns ~/.claude.json, so its CLI writes the entry
+    if agent is None and (commands := engram_mcp_commands(home)):  # Claude owns ~/.claude.json
         changed = True
         claude = shutil.which('claude')
         if dry_run:
@@ -545,14 +619,15 @@ def literal_secrets(data, prefix=''):
             yield name
 
 
-def check(home):
+def check(home, agent=None, runtime=False):
     problems = []
-    for rel, content in outputs(home).items():
+    for rel, content in outputs(home, agent).items():
         target = home / rel
         if not target.is_file() or target.read_bytes() != content:
             problems.append(f'drift: {target}')
-    problems += [f'stale: {home / rel}' for rel in RETIRED if (home / rel).exists()]
-    for rel in SELFTESTED:
+    problems += [f'stale: {home / rel}' for rel in retired_paths(agent) if (home / rel).exists()]
+    selftested = [rel.replace('.claude/', '.codex/') for rel in SELFTESTED] if agent else SELFTESTED
+    for rel in selftested:
         script = home / rel
         if script.is_file():
             result = subprocess.run([*python_for(home), str(script), 'selftest'],
@@ -560,6 +635,8 @@ def check(home):
             if result.returncode != 0:
                 problems.append(f'selftest failed: {script}')
     for rel, parse in CONFIGS.items():
+        if agent and not rel.startswith('.codex/'):
+            continue
         path = home / rel
         if path.is_file():
             try:
@@ -569,9 +646,11 @@ def check(home):
                 continue
             scope = {'env': data.get('env', {})} if rel.endswith('settings.json') else data
             problems += [f'secret: {path}: {key}' for key in literal_secrets(scope)]
+    if runtime:
+        problems += codex_runtime_findings(home)
     for problem in problems:
         print(problem)
-    print('ok' if not problems else f'{len(problems)} problem(s); run `harness install` to fix drift')
+    print('ok' if not problems else f'{len(problems)} problem(s); install fixes drift; /hooks reviews hook trust')
     return 1 if problems else 0
 
 
@@ -643,29 +722,160 @@ def marketplace_version(manifest):
     return None
 
 
-def untrusted_codex_hooks(home):
-    """Harness hooks Codex skips: it runs a hook only once /hooks trusts it, keyed by file, event and index."""
-    hooks, config = home / HOOK_CONFIGS['codex'], home / CODEX_CONFIG
-    if not (hooks.is_file() and config.is_file()):
-        return []
+def query_codex_hooks(home, command=None, timeout=12):
+    """Read effective hooks through Codex's local API. Never start turns or change trust."""
+    command = command or cli_argv('codex', 'app-server', '--stdio')
+    if not command:
+        raise FileNotFoundError('Codex CLI unavailable')
+    env = {**os.environ, 'CODEX_HOME': str((home / '.codex').resolve()),
+           'HOME': str(home), 'USERPROFILE': str(home)}
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace', env=env)
+    replies = queue.Queue(maxsize=1)
+
+    def exchange():
+        try:
+            consumed = 0
+            def send(message):
+                process.stdin.write(json.dumps(message) + '\n')
+                process.stdin.flush()
+            def receive(identifier):
+                nonlocal consumed
+                while True:
+                    line = process.stdout.readline(65537)
+                    consumed += len(line)
+                    if not line or len(line) > 65536 or consumed > 1048576:
+                        raise RuntimeError('Codex hook API returned no bounded response')
+                    response = json.loads(line)
+                    if response.get('id') == identifier:
+                        if 'error' in response:
+                            raise RuntimeError('Codex hook API rejected the request')
+                        return response['result']
+            send({'id': 0, 'method': 'initialize', 'params': {
+                'clientInfo': {'name': 'agent_harness', 'version': '0.1'}}})
+            receive(0)
+            send({'method': 'initialized'})
+            send({'id': 1, 'method': 'hooks/list', 'params': {'cwds': [str(Path.cwd())]}})
+            replies.put((True, receive(1)))
+        except Exception as error:
+            replies.put((False, error))
+
+    worker = threading.Thread(target=exchange, daemon=True)
+    worker.start()
     try:
-        state = tomllib.loads(config.read_text(encoding='utf-8')).get('hooks', {}).get('state')
-        if not isinstance(state, dict):  # a Codex without hook trust runs every hook
-            return []
-        trusted = {key.replace('\\', '/') for key, value in state.items()
-                   if isinstance(value, dict) and value.get('trusted_hash')}
-        missing = []
-        for event, entries in json.loads(hooks.read_text(encoding='utf-8')).get('hooks', {}).items():
-            snake = re.sub(r'(?<!^)(?=[A-Z])', '_', event).lower()  # PreToolUse -> pre_tool_use
-            missing += [f'{event} {hook_key(entry)}' for i, entry in enumerate(entries)
-                        if hook_key(entry) and f'{hooks.as_posix()}:{snake}:{i}:0' not in trusted]
-    except (OSError, ValueError, AttributeError, TypeError):
-        return []  # unreadable or an unexpected shape: `check` reports a broken hooks.json
-    return missing
+        try:
+            success, result = replies.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError('Codex hook API timed out') from None
+        if not success:
+            raise RuntimeError('Codex hook API could not be verified') from None
+        return result
+    finally:
+        try:
+            process.stdin.close()
+        except BrokenPipeError:
+            pass  # the server may have already exited
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            if os.name == 'nt':
+                subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        worker.join(timeout=1)
+        process.stdout.close()
 
 
-def doctor(home):
+def codex_hook_findings(expected, source, metadata):
+    """Assess Codex's effective hook metadata, not a guessed trust hash."""
+    findings = []
+    normalized = lambda path: os.path.normcase(str(Path(path).resolve()))
+    for event, entries in expected.items():
+        for entry in entries:
+            for handler in entry['hooks']:
+                label = f'{event} {entry.get("matcher", "*")}'
+                matched = [hook for hook in metadata
+                           if normalized(hook.get('sourcePath', '')) == normalized(source)
+                           and str(hook.get('eventName', '')).lower() == event.lower()
+                           and hook.get('matcher') == entry.get('matcher')
+                           and hook.get('command') == handler.get('command')]
+                if not matched:
+                    findings.append(f'Codex hook missing: {label}')
+                elif not any(hook.get('enabled') and hook.get('trustStatus') in ('trusted', 'managed')
+                             for hook in matched):
+                    state = 'disabled' if not any(hook.get('enabled') for hook in matched) else \
+                        ','.join(sorted({hook.get('trustStatus') or 'unverified' for hook in matched}))
+                    findings.append(f'Codex hook {state}: {label}; review it in /hooks')
+    return findings
+
+
+def codex_runtime_findings(home):
+    findings = []
+    config, hooks = home / CODEX_CONFIG, home / HOOK_CONFIGS['codex']
+    try:
+        data = tomllib.loads(config.read_text(encoding='utf-8')) if config.is_file() else {}
+        for name in ('engram', 'codegraph'):
+            entry = data.get('mcp_servers', {}).get(name, {})
+            if not (entry.get('command') or entry.get('url')):
+                findings.append(f'Codex MCP missing: {name}; install its CLI and run install --agent codex')
+            elif entry.get('enabled') is False:
+                findings.append(f'Codex MCP disabled: {name}; review your existing server entry')
+            elif entry.get('command') and not shutil.which(entry['command']):
+                findings.append(f'Codex MCP command unavailable: {name}')
+            elif str(entry.get('command', '')).replace('\\', '/').rsplit('/', 1)[-1].lower() in ('cmd', 'cmd.exe'):
+                args = entry.get('args', [])
+                if len(args) >= 3 and [arg.lower() for arg in args[:2]] == ['/d', '/c'] \
+                        and not shutil.which(args[2]):
+                    findings.append(f'Codex MCP launcher unavailable: {name}')
+        engram = data.get('mcp_servers', {}).get('engram', {})
+        if engram.get('command'):
+            names = engram.get('env_vars', [])
+            if not any(v == 'ENGRAM_CLOUD_TOKEN' or isinstance(v, dict) and v.get('name') == 'ENGRAM_CLOUD_TOKEN'
+                       for v in names):
+                findings.append('Codex Engram token forwarding missing: env_vars must name ENGRAM_CLOUD_TOKEN')
+            if 'ENGRAM_CLOUD_TOKEN' not in codex_shell_excludes(config.read_text(encoding='utf-8')):
+                findings.append('Codex shell token exclusion missing: ENGRAM_CLOUD_TOKEN')
+        probe = subprocess.run([*python_for(home), '-c',
+            'import importlib.util,json; print(json.dumps({"zstd": importlib.util.find_spec("compression") is not None and importlib.util.find_spec("compression.zstd") is not None}))'],
+            capture_output=True, encoding='utf-8', errors='replace', timeout=5)
+        if probe.returncode:
+            findings.append('Codex hook Python unavailable; configure python in ~/.agent-harness/config.toml')
+        elif not json.loads(probe.stdout).get('zstd') and any((home / '.codex/sessions').rglob('*.jsonl.zst')):
+            findings.append('Codex compressed transcript checks unavailable; configure Python 3.14 or newer')
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        findings.append('Codex configuration or hook Python could not be verified; inspect config and interpreter')
+    findings += untrusted_codex_hooks(home)
+    return findings
+
+
+def untrusted_codex_hooks(home):
+    """Effective hook readiness from Codex, including modified/disabled/unknown states."""
+    hooks = home / HOOK_CONFIGS['codex']
+    if not hooks.is_file():
+        return []  # structural check reports the missing file
+    findings = []
+    try:
+        installed = json.loads(hooks.read_text(encoding='utf-8')).get('hooks', {})
+        expected = {event: [entry for entry in entries if hook_key(entry)] for event, entries in installed.items()}
+        reported = query_codex_hooks(home)
+        items = reported.get('data')
+        if not isinstance(items, list) or not items:
+            raise ValueError('missing hook API data')
+        if any(item.get('warnings') or item.get('errors') for item in items):
+            findings.append('Codex hook loading reported warnings/errors; inspect /hooks')
+        metadata = [hook for item in items for hook in item.get('hooks', [])]
+        findings += codex_hook_findings(expected, str(hooks), metadata)
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError, subprocess.SubprocessError):
+        findings.append('Codex hook state unverified; check the local Codex CLI and inspect /hooks')
+    return findings
+
+
+def doctor(home, agent=None):
     """Report leftovers and version drift; never changes anything."""
+    if agent == 'codex':
+        return check(home, agent, runtime=True)
     findings = []
     settings = home / '.claude/settings.json'
     if settings.is_file():
@@ -719,9 +929,7 @@ def doctor(home):
         problem = 'is not registered for Claude Code' if len(commands) == 1 else 'for Claude Code has no command'
         findings.append(f'engram MCP {problem}, so its mem_* tools are missing '
                         '(run `bin/harness install` and restart Claude Code)')
-    if untrusted := untrusted_codex_hooks(home):
-        findings.append(f'Codex skips harness hooks it never trusted: {", ".join(untrusted)} (trust them in /hooks; '
-                        'a changed hook needs it again, which doctor cannot see)')
+    findings += untrusted_codex_hooks(home)
     if cg_update := codegraph_update():
         findings.append(f'codegraph update available: {cg_update} (npm install -g @colbymchenry/codegraph, '
                         'then `codegraph index` in each indexed repo)')
@@ -753,19 +961,29 @@ def main(argv=None):
     inst = sub.add_parser('install')
     inst.add_argument('--home', type=Path, default=Path.home())
     inst.add_argument('--dry-run', action='store_true')
-    sub.add_parser('check').add_argument('--home', type=Path, default=Path.home())
-    sub.add_parser('doctor').add_argument('--home', type=Path, default=Path.home())
+    inst.add_argument('--agent', choices=['codex'])
+    checking = sub.add_parser('check')
+    checking.add_argument('--home', type=Path, default=Path.home())
+    checking.add_argument('--agent', choices=['codex'])
+    checking.add_argument('--runtime', action='store_true', help='verify effective Codex hooks and integrations')
+    diagnosing = sub.add_parser('doctor')
+    diagnosing.add_argument('--home', type=Path, default=Path.home())
+    diagnosing.add_argument('--agent', choices=['codex'])
     args = parser.parse_args(argv)
+    if hasattr(args, 'home'):
+        args.home = args.home.resolve()
+    if getattr(args, 'runtime', False) and args.agent != 'codex':
+        parser.error('--runtime requires --agent codex')
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding='utf-8', newline='\n')  # Windows: cp1252 and CRLF by default
     if args.command == 'render':
         sys.stdout.write(render(args.agent))
     elif args.command == 'install':
-        install(args.home, args.dry_run)
+        install(args.home, args.dry_run, args.agent)
     elif args.command == 'check':
-        return check(args.home)
+        return check(args.home, args.agent, args.runtime)
     elif args.command == 'doctor':
-        return doctor(args.home)
+        return doctor(args.home, args.agent)
 
 
 if __name__ == '__main__':

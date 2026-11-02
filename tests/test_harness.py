@@ -938,8 +938,8 @@ class Doctor(unittest.TestCase):
         self.assertNotIn('codegraph update', self.doctor(PATH=path, INSTALLED='1.6.2', LATEST='1.6.2'))
         self.assertNotIn('codegraph update', self.doctor(PATH=path, INSTALLED='1.7.0', LATEST='1.6.2'))
 
-    def test_untrusted_codex_hooks(self):
-        # Codex runs a non-managed hook only after /hooks trusts it, keyed by file, event and index.
+    def test_hook_trust_is_unverified_without_the_codex_api(self):
+        # A stored hash, absent state, or disabled feature never proves effective trust.
         harness('install', '--home', str(self.home))
         hooks = (self.home / '.codex' / 'hooks.json')
         events = json.loads(hooks.read_text(encoding='utf-8'))['hooks']
@@ -950,15 +950,14 @@ class Doctor(unittest.TestCase):
         write = lambda keys: config.write_text(base + '\n[hooks.state]\n' + ''.join(
             f'[hooks.state."{key}"]\ntrusted_hash = "sha256:00"\n' for key in keys), encoding='utf-8')
         write(state)
-        self.assertNotIn('never trusted', self.doctor())
+        self.assertIn('Codex hook state unverified', self.doctor())
         write([key for key in state if ':pre_tool_use:' not in key])
         out = self.doctor()
-        self.assertIn('Codex skips harness hooks it never trusted: PreToolUse harness_guards.py bash', out)
-        self.assertIn('PreToolUse harness_guards.py mcp', out)
-        config.write_text(base, encoding='utf-8')  # a Codex without hook trust runs every hook
-        self.assertNotIn('never trusted', self.doctor())
-        config.write_text(base + '\nhooks = true\n', encoding='utf-8')  # an odd shape is not a crash
-        self.assertNotIn('never trusted', self.doctor())
+        self.assertIn('Codex hook state unverified', out)
+        config.write_text(base, encoding='utf-8')
+        self.assertIn('Codex hook state unverified', self.doctor())
+        config.write_text(base + '\n[features]\nhooks = false\n', encoding='utf-8')
+        self.assertIn('Codex hook state unverified', self.doctor())
 
     def test_orphan_skill_overrides(self):
         (self.home / '.claude' / 'skills' / 'present').mkdir(parents=True)

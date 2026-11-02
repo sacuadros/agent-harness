@@ -76,6 +76,10 @@ def tool_uses(entry):
 
 
 def is_user_prompt(entry):
+    payload = entry.get('payload')
+    if entry.get('type') == 'response_item' and isinstance(payload, dict) \
+            and payload.get('type') == 'message' and payload.get('role') == 'user':
+        return True  # Codex persists user messages separately from item_completed events
     item = codex_item(entry)
     if item is not None:
         return item.get('type') == 'UserMessage'

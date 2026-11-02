@@ -102,6 +102,39 @@ Restart Claude Code and the ChatGPT app so they pick it up. Codex receives it th
 
 ## Sync
 
+To manage only Codex, add `--agent codex` to `install` and `check`:
+
+```powershell
+python bin/harness install --agent codex --dry-run
+python bin/harness install --agent codex
+python bin/harness check --agent codex
+```
+
+This mode installs self-contained hooks under `~/.codex/hooks`, Codex instructions and subagents,
+and the harness skills under `~/.agents/skills`. It preserves other agents' files and third-party
+skills. Replaced Codex files use the same timestamped backups described below.
+When `engram` or `codegraph` is on PATH, this mode also registers missing local MCP servers.
+Existing server entries, including remote or disabled ones, are preserved. Engram receives
+`ENGRAM_CLOUD_TOKEN` by environment-variable name; its value is never written to the config.
+
+`check --agent codex` verifies files, config and hook selftests. To also check effective hook
+activation and integration prerequisites, run:
+
+```powershell
+python bin/harness doctor --agent codex
+# Equivalent: python bin/harness check --agent codex --runtime
+```
+
+Runtime checks use the local Codex CLI's `hooks/list` API. They report new, modified, disabled or
+missing hooks and exit with status 1 when readiness cannot be verified. They do not start model
+turns, execute hooks or change trust. Review the exact installed hooks in Codex's Settings > Hooks
+or `/hooks`; installing them never grants trust automatically. An older CLI without this API
+is reported as unverified.
+
+If this PC has compressed Codex transcripts, runtime checks also require Python 3.14 or newer
+for the hook interpreter. The MCP checks validate registration and executable availability;
+they do not authenticate to remote MCP servers or test Engram cloud replication.
+
 ```bash
 git pull && bin/harness install && bin/harness check
 ```
