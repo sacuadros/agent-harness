@@ -31,4 +31,6 @@ vars = { lead = "primary agent" }
 
 [copilot]
 description = "Proactive validation role for long or noisy independent checks. Use when isolated test output protects the primary context; otherwise launch a bounded generic checks_<scope> mission."
+# Copilot gives an agent every tool, `agent` included, when tools is unset.
+tools = ["read", "search", "execute"]
 vars = { lead = "primary agent" }

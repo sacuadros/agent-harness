@@ -137,7 +137,8 @@ def pi_subagent(source, spec):
 
 
 def copilot_subagent(source, spec):
-    lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}']
+    lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}',
+             f'tools: {json.dumps(spec["tools"])}']
     return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
 
 
@@ -503,6 +504,8 @@ def install(home, dry_run=False):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         print(f'installed {target}')
+        if rel == HOOK_CONFIGS['codex']:
+            print('Codex skips a changed hook until you trust it again in /hooks')
         changed = True
     if commands := engram_mcp_commands(home):  # Claude owns ~/.claude.json, so its CLI writes the entry
         changed = True
@@ -608,6 +611,24 @@ def engram_versions(home):
     return binary, claude, codex, update
 
 
+def codegraph_update():
+    """`installed -> latest` when npm offers a newer CodeGraph; its release notes ask for a re-index after upgrading."""
+    codegraph, npm = shutil.which('codegraph'), shutil.which('npm')
+    if not (codegraph and npm):
+        return None
+    try:
+        installed = subprocess.run([codegraph, '--version'], capture_output=True, encoding='utf-8', errors='replace',
+                                   timeout=30).stdout.strip()
+        latest = subprocess.run([npm, 'view', '@colbymchenry/codegraph', 'version'], capture_output=True,
+                                encoding='utf-8', errors='replace', timeout=60).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    version = lambda text: tuple(map(int, text.split('.'))) if re.fullmatch(r'\d+\.\d+\.\d+', text) else None
+    if version(installed) and version(latest) and version(installed) < version(latest):
+        return f'{installed} -> {latest}'
+    return None
+
+
 def marketplace_version(manifest):
     """Engram plugin version a marketplace manifest offers (Claude lists plugins; Codex has one)."""
     if not manifest.is_file():
@@ -620,6 +641,27 @@ def marketplace_version(manifest):
         if plugin.get('name', 'engram') == 'engram':
             return plugin.get('version')
     return None
+
+
+def untrusted_codex_hooks(home):
+    """Harness hooks Codex skips: it runs a hook only once /hooks trusts it, keyed by file, event and index."""
+    hooks, config = home / HOOK_CONFIGS['codex'], home / CODEX_CONFIG
+    if not (hooks.is_file() and config.is_file()):
+        return []
+    try:
+        state = tomllib.loads(config.read_text(encoding='utf-8')).get('hooks', {}).get('state')
+        if not isinstance(state, dict):  # a Codex without hook trust runs every hook
+            return []
+        trusted = {key.replace('\\', '/') for key, value in state.items()
+                   if isinstance(value, dict) and value.get('trusted_hash')}
+        missing = []
+        for event, entries in json.loads(hooks.read_text(encoding='utf-8')).get('hooks', {}).items():
+            snake = re.sub(r'(?<!^)(?=[A-Z])', '_', event).lower()  # PreToolUse -> pre_tool_use
+            missing += [f'{event} {hook_key(entry)}' for i, entry in enumerate(entries)
+                        if hook_key(entry) and f'{hooks.as_posix()}:{snake}:{i}:0' not in trusted]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return []  # unreadable or an unexpected shape: `check` reports a broken hooks.json
+    return missing
 
 
 def doctor(home):
@@ -677,6 +719,12 @@ def doctor(home):
         problem = 'is not registered for Claude Code' if len(commands) == 1 else 'for Claude Code has no command'
         findings.append(f'engram MCP {problem}, so its mem_* tools are missing '
                         '(run `bin/harness install` and restart Claude Code)')
+    if untrusted := untrusted_codex_hooks(home):
+        findings.append(f'Codex skips harness hooks it never trusted: {", ".join(untrusted)} (trust them in /hooks; '
+                        'a changed hook needs it again, which doctor cannot see)')
+    if cg_update := codegraph_update():
+        findings.append(f'codegraph update available: {cg_update} (npm install -g @colbymchenry/codegraph, '
+                        'then `codegraph index` in each indexed repo)')
     if update:
         findings.append(f'engram update available: {update} (brew upgrade engram)')
     if engram := shutil.which('engram'):  # the status names where the token came from, never its value

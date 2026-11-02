@@ -203,7 +203,8 @@ def _bash_decision(cmd):
                                    f'del usuario para destino y operación.')
     if CODEGRAPH_INDEX.search(cmd):
         return decision('ask', 'Regla global: codegraph index solo para recuperar un índice '
-                               'corrupto. Confirma que es el caso.')
+                               'corrupto o tras una actualización de CodeGraph que pida '
+                               'reindexar. Confirma que es el caso.')
     return None
 
 

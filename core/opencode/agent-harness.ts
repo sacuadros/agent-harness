@@ -22,7 +22,7 @@ function guard(mode: string, payload: object, extra: string[] = []) {
 
 export const AgentHarness = async () => ({
   "tool.execute.before": async (input: { tool: string; sessionID: string }, output: { args: any }) => {
-    if (input.tool === "bash") {
+    if (input.tool === "bash" || input.tool === "shell") {  // OpenCode 2.2.5 runs bash calls as shell
       const out = guard("bash", { tool_input: { command: output.args?.command ?? "" } }, ["--codex"])
       if (out?.hookSpecificOutput?.permissionDecision === "deny") {
         throw new Error(out.hookSpecificOutput.permissionDecisionReason)

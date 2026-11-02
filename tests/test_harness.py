@@ -667,6 +667,7 @@ class Copilot(unittest.TestCase):
         self.assertTrue((prompts / 'sonar-fix.prompt.md').exists())
         agent = (self.home / '.copilot' / 'agents' / 'test-runner.agent.md').read_text(encoding='utf-8')
         self.assertTrue(agent.startswith('---\nname: test-runner\ndescription: '))
+        self.assertIn('\ntools: ["read", "search", "execute"]\n---', agent)  # unset means every tool
         hooks = json.loads((self.home / '.copilot' / 'hooks' / 'agent-harness.json').read_text(encoding='utf-8'))
         # Copilot runs `bash` on macOS/Linux and `powershell` on Windows; one key per PC, with the full interpreter.
         shell = 'powershell' if os.name == 'nt' else 'bash'
@@ -923,6 +924,41 @@ class Doctor(unittest.TestCase):
         path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
         self.assertIn('claude code 2.1.283 ignores onFailure', self.doctor(PATH=path, VERSION='2.1.283'))
         self.assertNotIn('ignores onFailure', self.doctor(PATH=path, VERSION='2.1.310'))
+
+    @unittest.skipIf(os.name == 'nt', 'the fake codegraph and npm are shell scripts')
+    def test_codegraph_update_asks_for_a_reindex(self):
+        bin_dir = Path(tempfile.mkdtemp())
+        for name, version in (('codegraph', '$INSTALLED'), ('npm', '$LATEST')):
+            (bin_dir / name).write_text(f'#!/bin/sh\necho "{version}"\n', encoding='utf-8', newline='\n')
+            (bin_dir / name).chmod(0o755)
+        path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
+        out = self.doctor(PATH=path, INSTALLED='1.1.6', LATEST='1.6.2')
+        self.assertIn('codegraph update available: 1.1.6 -> 1.6.2', out)
+        self.assertIn('codegraph index', out)
+        self.assertNotIn('codegraph update', self.doctor(PATH=path, INSTALLED='1.6.2', LATEST='1.6.2'))
+        self.assertNotIn('codegraph update', self.doctor(PATH=path, INSTALLED='1.7.0', LATEST='1.6.2'))
+
+    def test_untrusted_codex_hooks(self):
+        # Codex runs a non-managed hook only after /hooks trusts it, keyed by file, event and index.
+        harness('install', '--home', str(self.home))
+        hooks = (self.home / '.codex' / 'hooks.json')
+        events = json.loads(hooks.read_text(encoding='utf-8'))['hooks']
+        state = [f'{hooks.as_posix()}:{re.sub(r"(?<!^)(?=[A-Z])", "_", event).lower()}:{i}:0'
+                 for event, entries in events.items() for i in range(len(entries))]
+        config = self.home / '.codex' / 'config.toml'
+        base = config.read_text(encoding='utf-8') if config.is_file() else ''
+        write = lambda keys: config.write_text(base + '\n[hooks.state]\n' + ''.join(
+            f'[hooks.state."{key}"]\ntrusted_hash = "sha256:00"\n' for key in keys), encoding='utf-8')
+        write(state)
+        self.assertNotIn('never trusted', self.doctor())
+        write([key for key in state if ':pre_tool_use:' not in key])
+        out = self.doctor()
+        self.assertIn('Codex skips harness hooks it never trusted: PreToolUse harness_guards.py bash', out)
+        self.assertIn('PreToolUse harness_guards.py mcp', out)
+        config.write_text(base, encoding='utf-8')  # a Codex without hook trust runs every hook
+        self.assertNotIn('never trusted', self.doctor())
+        config.write_text(base + '\nhooks = true\n', encoding='utf-8')  # an odd shape is not a crash
+        self.assertNotIn('never trusted', self.doctor())
 
     def test_orphan_skill_overrides(self):
         (self.home / '.claude' / 'skills' / 'present').mkdir(parents=True)

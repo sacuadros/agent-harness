@@ -31,4 +31,6 @@ vars = { lead = "primary agent" }
 
 [copilot]
 description = "Proactive fresh-review role for a completed Critical diff when permitted and useful, or for Standard assurance when evidence warrants it. Do not duplicate a review owned by another skill or plugin."
+# Copilot gives an agent every tool, `agent` included, when tools is unset.
+tools = ["read", "search", "execute"]
 vars = { lead = "primary agent" }

@@ -32,4 +32,6 @@ vars = { lead = "primary agent" }
 
 [copilot]
 description = "Bounded implementation or fixes with exclusive file ownership, when delegation is warranted."
+# Copilot gives an agent every tool, `agent` included, when tools is unset.
+tools = ["read", "search", "execute", "edit"]
 vars = { lead = "primary agent" }

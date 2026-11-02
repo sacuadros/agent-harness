@@ -18,7 +18,7 @@ Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` 
 
 - **Slice Flow** instead of upfront specs: a backlog of one-line vertical slices, refined just in time (`story`) and built test by test (`pair`). You approve the backlog once; the agent builds every slice on its own and stops only for product decisions, alarms, or approvals. Commits and pushes always wait for you. Say "pair" or "con pausas" to slow it down.
 - **Guards** shared by every agent (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution, approval for push/SSH/PR/publish/deploy, no reads of credential files or Keychain secrets, no CodeGraph lifecycle commands, and a backup before editing global agent config. The same rules cover MCP tools that run commands (such as Desktop Commander). A guard that errors or cannot start blocks the action instead of allowing it; Claude Code needs 2.1.295 or newer for the second part.
-- **Least privilege by configuration:** Claude subagents cannot spawn their own (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), and Codex shell commands do not inherit `ENGRAM_CLOUD_TOKEN`, which only its Engram MCP receives.
+- **Least privilege by configuration:** Claude subagents cannot spawn their own (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), Copilot subagents get an explicit `tools:` list without `agent`, and Codex shell commands do not inherit `ENGRAM_CLOUD_TOKEN`, which only its Engram MCP receives.
 - **Memory and code-graph discipline** in Claude Code and Codex (`core/hooks/enforce_memory_graph.py`): save Engram memory after substantive turns, and query CodeGraph before broad searches in indexed repos.
 - **Delegation only for named reasons** (exploration, parallel writers, noisy checks, independent review, context backstop).
 
@@ -40,7 +40,7 @@ bin/harness check               # exit 1 on drift, broken config, failed hook se
 bin/harness doctor              # read-only report: leftovers, PATH duplicates, version drift
 ```
 
-Codex asks you to trust new hooks the first time it sees them. Approve them once in the Codex app.
+Codex asks you to trust new hooks the first time it sees them. Approve them once in the Codex app. `bin/harness doctor` reports harness hooks Codex has not trusted yet, and an outdated CodeGraph, whose upgrades ask for a `codegraph index` in each indexed repo.
 
 The Claude app's Code tab runs Claude Code on the same `~/.claude` (rules, skills, subagents, hooks, MCP servers), so one install covers both. It ships its own Claude Code version, which may differ from the `claude` CLI that `doctor` checks.
 

@@ -12,5 +12,5 @@ prefix_rule(pattern=["wrangler", "deploy"], decision="prompt", justification="De
 prefix_rule(pattern=["wrangler", "pages", "deploy"], decision="prompt", justification="Deploy: requires explicit user authorization.", not_match=["wrangler pages dev"])
 prefix_rule(pattern=[["netlify", "fly"], "deploy"], decision="prompt", justification="Deploy: requires explicit user authorization.")
 prefix_rule(pattern=["vercel"], decision="prompt", justification="Deploy: requires explicit user authorization.")
-prefix_rule(pattern=["codegraph", "index"], decision="prompt", justification="Only for explicit index-corruption recovery; confirm that is the case.")
+prefix_rule(pattern=["codegraph", "index"], decision="prompt", justification="Only for index-corruption recovery or a CodeGraph upgrade that asks for a re-index; confirm that is the case.")
 prefix_rule(pattern=["codegraph", ["uninit", "install", "uninstall", "upgrade"]], decision="forbidden", justification="Global rule: never run CodeGraph lifecycle commands; ask the user to run them.", match=["codegraph uninstall"], not_match=["codegraph query Foo"])
