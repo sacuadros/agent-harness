@@ -1,3 +1,4 @@
+import importlib.machinery
 import importlib.util
 import json
 import re
@@ -37,6 +38,13 @@ def harness(*args):
                           capture_output=True, encoding='utf-8', check=True).stdout
 
 
+def load_harness():
+    loader = importlib.machinery.SourceFileLoader('harness_tool', str(HARNESS))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader('harness_tool', loader))
+    loader.exec_module(module)
+    return module
+
+
 def run(*args):
     return subprocess.run([sys.executable, str(HARNESS), *args], capture_output=True, encoding='utf-8')
 
@@ -52,6 +60,14 @@ class SliceFlowPacing(unittest.TestCase):
                 self.assertIn(rule, text, agent)
             self.assertNotIn('sin pausas', text, agent)
 
+    def test_every_agent_gets_the_scope_contract(self):
+        for agent in ('claude', 'codex', 'opencode', 'pi', 'copilot'):
+            text = harness('render', agent)
+            for rule in ('Do only what was asked', 'ask instead of assuming',
+                         'leave it undone unless the user says to apply it'):
+                self.assertIn(rule, text, agent)
+            self.assertNotIn('recording assumed answers', text, agent)
+
     def test_skills_do_not_wait_or_commit_on_their_own(self):
         skills = REPO / 'core' / 'skills'
         self.assertIn('This is the only checkpoint before building', (skills / 'backlog' / 'SKILL.md').read_text(encoding='utf-8'))
@@ -59,6 +75,244 @@ class SliceFlowPacing(unittest.TestCase):
         pair = (skills / 'pair' / 'SKILL.md').read_text(encoding='utf-8')
         self.assertIn('Do not commit', pair)
         self.assertIn('commit, commit and push, or not yet', pair)
+
+
+class Restore(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.backups = self.home / '.agent-harness' / 'backups'
+
+    def last_install(self):
+        return max(p.parent.name for p in self.backups.glob('*/manifest.json'))
+
+    def test_undoes_an_install_and_keeps_what_it_removes(self):
+        harness('install', '--home', str(self.home))
+        edited = self.home / '.claude' / 'CLAUDE.md'
+        edited.write_text('hand edit\n', encoding='utf-8', newline='\n')
+        added = self.home / '.claude' / 'skills' / 'pair' / 'SKILL.md'
+        added.unlink()
+        harness('install', '--home', str(self.home))
+        harness('restore', self.last_install(), '--home', str(self.home))
+        self.assertEqual(edited.read_text(encoding='utf-8'), 'hand edit\n')
+        self.assertFalse(added.exists())
+        kept = list(self.backups.glob('*-before-restore/.claude/CLAUDE.md'))
+        self.assertEqual([k.read_text(encoding='utf-8') for k in kept], [harness('render', 'claude')])
+        self.assertEqual(len(list(self.backups.glob('*-before-restore/.claude/skills/pair/SKILL.md'))), 1)
+
+    def test_brings_back_a_retired_folder(self):
+        old = self.home / '.codex' / 'skills' / 'pair' / 'SKILL.md'
+        old.parent.mkdir(parents=True)
+        old.write_text('old\n', encoding='utf-8')
+        harness('install', '--home', str(self.home))
+        self.assertFalse(old.exists())
+        harness('restore', self.last_install(), '--home', str(self.home))
+        self.assertEqual(old.read_text(encoding='utf-8'), 'old\n')
+
+    def test_refuses_a_backup_it_cannot_complete(self):
+        live = self.home / '.claude' / 'CLAUDE.md'
+        live.parent.mkdir(parents=True)
+        live.write_text('live\n', encoding='utf-8')
+        broken = self.backups / '20200101-000000-000000'
+        broken.mkdir(parents=True)
+        (broken / 'manifest.json').write_text(json.dumps(
+            {'created': [], 'replaced': ['.claude/CLAUDE.md'], 'retired': []}), encoding='utf-8')
+        result = run('restore', broken.name, '--home', str(self.home))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(live.read_text(encoding='utf-8'), 'live\n')
+
+    @unittest.skipIf(os.name == 'nt', 'symlinks need a privilege on Windows')
+    def test_writes_through_a_symlinked_file(self):
+        dotfile = self.home / 'dotfiles' / 'CLAUDE.md'
+        dotfile.parent.mkdir()
+        dotfile.write_text('mine\n', encoding='utf-8')
+        link = self.home / '.claude' / 'CLAUDE.md'
+        link.parent.mkdir()
+        link.symlink_to(dotfile)
+        harness('install', '--home', str(self.home))
+        harness('restore', self.last_install(), '--home', str(self.home))
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(dotfile.read_text(encoding='utf-8'), 'mine\n')
+
+    @unittest.skipIf(os.name == 'nt', 'symlinks need a privilege on Windows')
+    def test_brings_back_retired_links(self):
+        folder = self.home / '.codex' / 'skills' / 'pair'
+        folder.mkdir(parents=True)
+        (folder / 'SKILL.md').write_text('old\n', encoding='utf-8')
+        (folder / 'gone').symlink_to('missing')
+        story = self.home / '.codex' / 'skills' / 'story'
+        story.symlink_to('pair')
+        harness('install', '--home', str(self.home))
+        self.assertFalse(folder.exists())
+        harness('restore', self.last_install(), '--home', str(self.home))
+        self.assertTrue((folder / 'gone').is_symlink())
+        self.assertEqual(os.readlink(story), 'pair')
+
+    def test_refuses_a_backup_without_manifest(self):
+        for stamp in ('20200101-000000', '../..'):
+            result = run('restore', stamp, '--home', str(self.home))
+            self.assertEqual(result.returncode, 1, stamp)
+            self.assertIn('no install manifest', result.stdout)
+
+
+class Selection(unittest.TestCase):
+    """`install` writes only for the agents you pick, and remembers them."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        for folder in ('.claude', '.codex', '.config/opencode', '.pi/agent', '.copilot'):
+            (self.home / folder).mkdir(parents=True)
+        (self.home / '.claude.json').write_text('{}\n', encoding='utf-8')
+
+    def install(self, *args):
+        return harness('install', '--home', str(self.home), *args)
+
+    def exists(self, *paths):
+        return [(self.home / path).exists() for path in paths]
+
+    def test_writes_only_for_the_chosen_agent(self):
+        self.install('--agents', 'codex')
+        self.assertEqual(self.exists('.codex/AGENTS.md', '.agents/skills/pair/SKILL.md'), [True, True])
+        self.assertEqual(self.exists('.claude/CLAUDE.md', '.claude/skills', '.claude/settings.json', '.pi/agent/AGENTS.md',
+                                     '.copilot/copilot-instructions.md', '.config/opencode/AGENTS.md'), [False] * 6)
+
+    def test_shared_files_go_with_every_agent_that_reads_them(self):
+        self.install('--agents', 'copilot')
+        self.assertEqual(self.exists('.copilot/copilot-instructions.md', '.agents/skills/pair/SKILL.md',
+                                     '.claude/hooks/harness_guards.py'), [True, True, True])
+        self.assertEqual(self.exists('.codex/AGENTS.md', '.claude/CLAUDE.md'), [False, False])
+
+    def test_remembers_the_choice(self):
+        self.install('--agents', 'claude')
+        self.assertIn('no changes', self.install())
+        self.assertEqual(self.exists('.codex/AGENTS.md'), [False])
+        result = run('check', '--home', str(self.home))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'))
+
+    def test_dry_run_changes_nothing(self):
+        out = self.install('--agents', 'claude', '--dry-run')
+        self.assertIn('CLAUDE.md', out)
+        self.assertNotIn('AGENTS.md', out)
+        self.assertEqual(self.exists('.agent-harness/agents', '.claude/CLAUDE.md'), [False, False])
+
+    def test_dropping_an_agent_leaves_its_files(self):
+        self.install('--agents', 'claude')
+        self.install('--agents', 'codex')
+        self.assertEqual(self.exists('.claude/CLAUDE.md', '.codex/AGENTS.md'), [True, True])
+        self.assertEqual(run('check', '--home', str(self.home)).returncode, 0)
+
+    def test_stale_copies_of_other_agents_stay(self):
+        stale = self.home / '.pi' / 'agent' / 'APPEND_SYSTEM.md'
+        stale.write_text('mine\n', encoding='utf-8')
+        self.install('--agents', 'claude')
+        self.assertTrue(stale.exists())
+        self.assertEqual(run('check', '--home', str(self.home)).returncode, 0)
+
+    def test_refuses_what_it_cannot_find(self):
+        shutil.rmtree(self.home / '.pi')
+        env = {**os.environ, 'PATH': ''}
+        for name in ('pi', 'nope'):
+            result = subprocess.run([sys.executable, str(HARNESS), 'install', '--home', str(self.home), '--agents', name],
+                                    capture_output=True, encoding='utf-8', env=env)
+            self.assertEqual(result.returncode, 1, name)
+            self.assertIn('not found', result.stdout)
+        self.assertEqual(self.exists('.agent-harness/agents', '.claude/CLAUDE.md'), [False, False])
+
+    def test_broken_configs_of_other_agents_do_not_matter(self):
+        for broken in ('[]', '{'):
+            (self.home / '.pi' / 'agent' / 'settings.json').write_text(broken, encoding='utf-8')
+            (self.home / '.config' / 'opencode' / 'opencode.json').write_text(broken, encoding='utf-8')
+            self.install('--agents', 'claude')
+            self.assertEqual(run('check', '--home', str(self.home)).returncode, 0, broken)
+
+    def test_an_unusable_choice_counts_as_none(self):
+        choice = self.home / '.agent-harness' / 'agents'
+        choice.parent.mkdir()
+        for content in (b'', b'nope\n', b'\xff\n'):
+            choice.write_bytes(content)
+            self.install()
+            self.assertEqual(self.exists('.claude/CLAUDE.md', '.codex/AGENTS.md'), [True, True], content)
+            (self.home / '.claude' / 'CLAUDE.md').unlink()
+
+    def test_installing_one_agent_does_not_make_another_found(self):
+        (self.home / '.claude.json').unlink()
+        env = {**os.environ, 'PATH': ''}
+        command = [sys.executable, str(HARNESS), 'install', '--home', str(self.home), '--agents']
+        self.assertEqual(subprocess.run([*command, 'codex'], capture_output=True, env=env).returncode, 0)
+        self.assertEqual(subprocess.run([*command, 'claude'], capture_output=True, env=env).returncode, 1)
+
+    def test_vs_code_alone_counts_as_copilot(self):
+        tool = load_harness()
+        shutil.rmtree(self.home / '.copilot')
+        with mock.patch.object(tool.shutil, 'which', lambda name: None):
+            self.assertNotIn('copilot', tool.detected(self.home))
+            (self.home / tool.VSCODE_USER[1]).mkdir(parents=True)
+            self.assertIn('copilot', tool.detected(self.home))
+
+    def test_with_no_choice_every_stale_copy_still_goes(self):
+        shutil.rmtree(self.home / '.copilot')
+        stale = self.home / '.config' / 'copilot' / 'copilot-instructions.md'
+        stale.parent.mkdir()
+        stale.write_text('old\n', encoding='utf-8')
+        self.install()
+        self.assertFalse(stale.exists())
+
+    def test_choose_without_a_terminal_gives_up(self):
+        result = subprocess.run([sys.executable, str(HARNESS), 'install', '--choose', '--home', str(self.home)],
+                                stdin=subprocess.DEVNULL, capture_output=True, encoding='utf-8', timeout=20)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('nothing selected', result.stdout)
+        self.assertNotIn('\x1b', result.stdout)
+
+    @unittest.skipIf(os.name == 'nt', 'needs a pty')
+    def test_choose_with_no_input_does_not_hang(self):
+        import pty
+        master, slave = pty.openpty()
+        tui = subprocess.Popen([sys.executable, str(HARNESS), 'install', '--choose', '--home', str(self.home)],
+                               stdin=subprocess.DEVNULL, stdout=slave, stderr=slave, env={**os.environ, 'TERM': 'xterm'})
+        os.close(slave)
+        self.assertEqual(tui.wait(timeout=20), 0)
+        os.close(master)
+
+    def test_every_managed_path_has_an_owner(self):
+        tool = load_harness()
+        for rel in [*tool.outputs(self.home, agents=set(tool.AGENTS)), *tool.RETIRED]:
+            self.assertTrue(tool.wanted(rel, set(tool.AGENTS)), rel)
+
+    def test_detects_a_config_folder_or_a_command(self):
+        tool = load_harness()
+        shutil.rmtree(self.home / '.pi')
+        with mock.patch.object(tool.shutil, 'which', lambda name: '/bin/pi' if name == 'pi' else None):
+            self.assertIn('pi', tool.detected(self.home))
+        with mock.patch.object(tool.shutil, 'which', lambda name: None):
+            self.assertEqual(tool.detected(self.home), {'claude', 'codex', 'opencode', 'copilot'})
+
+    def test_text_picker_for_terminals_without_curses(self):
+        tool = load_harness()
+        names = ['claude', 'codex', 'pi']
+        for answer, expected in (('', {'claude', 'pi'}), ('2', {'codex'}), ('1, 2', {'claude', 'codex'}), ('q', None)):
+            with mock.patch('builtins.input', lambda prompt: answer), mock.patch('builtins.print'):
+                self.assertEqual(tool.pick_text(names, {'claude', 'pi'}, []), expected, answer)
+
+    @unittest.skipIf(os.name == 'nt', 'needs curses and a pty')
+    def test_first_install_in_a_terminal_opens_the_picker(self):
+        import pty
+        master, slave = pty.openpty()
+        env = {**os.environ, 'TERM': 'xterm', 'LINES': '24', 'COLUMNS': '80', 'PATH': ''}
+        tui = subprocess.Popen([sys.executable, str(HARNESS), 'install', '--home', str(self.home)],
+                               stdin=slave, stdout=slave, stderr=slave, env=env)
+        os.close(slave)
+        seen = b''
+        while b'where to install' not in seen:
+            seen += os.read(master, 4096)
+        os.write(master, b' \r')  # untick Claude Code, then confirm
+        try:
+            while os.read(master, 4096):
+                pass
+        except OSError:  # Linux reports the closed pty as EIO
+            pass
+        self.assertEqual(tui.wait(timeout=30), 0)
+        self.assertEqual(self.exists('.claude/CLAUDE.md', '.codex/AGENTS.md'), [False, True])
+        self.assertNotIn('claude', (self.home / '.agent-harness' / 'agents').read_text(encoding='utf-8').split())
 
 
 class Render(unittest.TestCase):
@@ -82,9 +336,10 @@ class Install(unittest.TestCase):
 
     def test_second_install_changes_nothing(self):
         harness('install', '--home', str(self.home))
+        backups = list((self.home / '.agent-harness' / 'backups').iterdir())
         out = harness('install', '--home', str(self.home))
         self.assertIn('no changes', out)
-        self.assertFalse((self.home / '.agent-harness' / 'backups').exists())
+        self.assertEqual(list((self.home / '.agent-harness' / 'backups').iterdir()), backups)
 
     def test_backs_up_a_changed_file_before_overwriting(self):
         harness('install', '--home', str(self.home))
@@ -344,7 +599,7 @@ class Hooks(unittest.TestCase):
                 if argv[-1] == 'bash':
                     self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
                 ran += 1
-        self.assertEqual(ran, 7)  # with the MCP guard
+        self.assertEqual(ran, 8)  # with the MCP guard
 
     def test_claude_hooks_run_without_a_shell(self):
         # Exec form: Claude spawns the interpreter itself, so zsh, Git Bash and PowerShell behave alike.
@@ -393,7 +648,8 @@ class Hooks(unittest.TestCase):
         hooks = (self.home / '.claude' / 'hooks').as_posix()
         self.assertEqual(self.commands(data['hooks']['Stop']), [
             f'/usr/bin/python3 {hooks}/enforce_memory_graph.py stop',
-            f'/usr/bin/python3 {hooks}/engram_auto_enroll.py'])
+            f'/usr/bin/python3 {hooks}/engram_auto_enroll.py',
+            f'/usr/bin/python3 {hooks}/enforce_memory_graph.py scope'])
         self.assertIn(f'/usr/bin/python3 {hooks}/harness_guards.py bash',
                       self.commands(data['hooks']['PreToolUse']))
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
@@ -433,10 +689,11 @@ class Hooks(unittest.TestCase):
         hooks = json.loads(hooks_json.read_text(encoding='utf-8'))['hooks']
         self.assertEqual(hooks['PostToolUse'], [foreign])
         stop = hooks['Stop']
-        self.assertEqual(len(stop), 3)
+        self.assertEqual(len(stop), 4)
         self.assertEqual(stop[1], foreign)
         self.assertTrue(self.commands([stop[0]])[0].endswith('/.codex/hooks/engram_auto_enroll.py'))
         self.assertTrue(self.commands([stop[2]])[0].endswith('/.claude/hooks/enforce_memory_graph.py stop'))
+        self.assertTrue(self.commands([stop[3]])[0].endswith('/.claude/hooks/enforce_memory_graph.py scope'))
         self.assertEqual(len(hooks['PreToolUse']), 4)  # with the MCP guard
 
     def test_rules_block_keeps_codex_added_rules(self):

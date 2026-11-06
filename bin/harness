@@ -2,7 +2,9 @@
 """Render the agent harness from one source and install it into each agent's home.
 
   harness render <agent>              print the rendered instructions for one agent
-  harness install [--home] [--dry-run] write changed files, backing up what they replace
+  harness install [--home] [--dry-run] [--agents a,b | --choose]
+                                      write changed files for the agents you pick, backing up what they replace
+  harness restore <stamp> [--home]    undo one install from its backup manifest
   harness check [--home]              exit 1 if anything installed drifted or is broken
   harness doctor [--home]             report leftovers and version drift (read-only)
 """
@@ -21,9 +23,14 @@ import shlex
 import shutil
 import subprocess
 import threading
-import time
+from datetime import datetime
 import tomllib
 from pathlib import Path
+
+try:
+    import curses
+except ImportError:  # Windows Python ships without it: `pick_text` takes over
+    curses = None
 
 REPO = Path(__file__).resolve().parent.parent
 INSTRUCTIONS = REPO / 'core' / 'instructions'
@@ -457,69 +464,177 @@ def present(agent, home):
     return agent not in OPTIONAL_AGENTS or (home / OPTIONAL_AGENTS[agent]).is_dir()
 
 
-def outputs(home, agent=None):
-    """Every file the harness manages, as home-relative path -> bytes."""
+# Which agents need each path, first match wins. Shared files go with every agent that reads them:
+# all guards run from ~/.claude/hooks, and all but Claude read the skills in ~/.agents/skills.
+OWNERS = (('.claude/hooks/', set(AGENTS)), ('.agents/', set(AGENTS) - {'claude'}), ('.claude/', {'claude'}),
+          ('.codex/', {'codex'}), ('.config/opencode/', {'opencode'}), ('.pi/', {'pi'}), ('.copilot/', {'copilot'}),
+          ('.config/copilot/', {'copilot'}), *((f'{user}/', {'copilot'}) for user in VSCODE_USER))
+
+
+def wanted(rel, agents):
+    return bool(next(owners for prefix, owners in OWNERS if rel.startswith(prefix)) & agents)
+
+
+def choice_file(home):
+    return home / '.agent-harness' / 'agents'
+
+
+def saved_choice(home):
+    """Agents saved on this PC; empty when there is no usable choice."""
+    if not choice_file(home).is_file():
+        return set()
+    return set(choice_file(home).read_text(encoding='utf-8', errors='replace').split()) & set(AGENTS)
+
+
+def selected(home):
+    """The agents chosen on this PC; with no choice saved, every agent `present` finds."""
+    return saved_choice(home) or {agent for agent in AGENTS if present(agent, home)}
+
+
+def retiring(home, agents=None):
+    """Old copies to clear. With no choice made, all of them; otherwise only the chosen agents' own."""
+    if agents is None and not saved_choice(home):
+        return RETIRED
+    chosen = selected(home) if agents is None else agents
+    return [rel for rel in RETIRED if wanted(rel, chosen)]
+
+
+def detected(home):
+    """Agents with their own config or a command on this PC."""
+    # Not ~/.claude for Claude Code: `install` creates it for the hooks every agent shares.
+    marks = {**OPTIONAL_AGENTS, 'claude': '.claude.json', 'codex': '.codex'}
+    found = {agent for agent in AGENTS if (home / marks[agent]).exists() or shutil.which(agent)}
+    return found | {'copilot'} if vscode_user(home) else found
+
+
+def label(agent):
+    return AGENTS[agent]['vars']['agent']
+
+
+def pick_curses(names, ticked, missing):
+    def screen_loop(screen):
+        curses.curs_set(0)
+        at, chosen = 0, set(ticked)
+        while True:
+            rows = [f'{">" if i == at else " "} [{"x" if name in chosen else " "}] {label(name)}'
+                    for i, name in enumerate(names)]
+            footer = [f'Not found: {", ".join(missing)}'] if missing else []
+            screen.erase()
+            for y, line in enumerate(['agent-harness: where to install', '', *rows, '', *footer,
+                                      'Up/Down move, Space ticks, Enter installs, q cancels']):
+                screen.addnstr(y, 0, line, curses.COLS - 1)
+            key = screen.getch()
+            if key in (curses.KEY_UP, ord('k')):
+                at = (at - 1) % len(names)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                at = (at + 1) % len(names)
+            elif key == ord(' '):
+                chosen ^= {names[at]}
+            elif key in (10, 13, curses.KEY_ENTER):
+                return chosen
+            elif key in (ord('q'), 27):
+                return None
+    return curses.wrapper(screen_loop)
+
+
+def pick_text(names, ticked, missing):
+    for i, name in enumerate(names, 1):
+        print(f'  {i}. [{"x" if name in ticked else " "}] {label(name)}')
+    if missing:
+        print(f'Not found: {", ".join(missing)}')
+    default = ','.join(str(i) for i, name in enumerate(names, 1) if name in ticked)
+    answer = input(f'Numbers to install [{default}], q cancels: ').strip().lower()
+    if answer == 'q':
+        return None
+    return {names[int(n) - 1] for n in re.findall(r'\d+', answer or default) if 0 < int(n) <= len(names)}
+
+
+def choose_agents(home):
+    """Ask where to install; an empty result means nothing was picked."""
+    found = detected(home)
+    names = [agent for agent in AGENTS if agent in found]
+    if not names:
+        print('no supported agent found on this PC')
+        return None
+    missing = [label(agent) for agent in AGENTS if agent not in found]
+    ticked = saved_choice(home) & found or set(names)
+    try:
+        if curses and sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                return pick_curses(names, ticked, missing)
+            except curses.error:  # unknown TERM or a window too small to draw
+                pass
+        return pick_text(names, ticked, missing)
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+
+def outputs(home, agent=None, agents=None):
+    """Every file the harness manages for these agents, as home-relative path -> bytes.
+
+    `agent` is the standalone mode: that agent alone, with its own hook copies."""
+    standalone = agent == 'codex'
+    agents = {agent} if agent else selected(home) if agents is None else agents
     files = {}
-    selected = [agent] if agent else AGENTS
     for name, spec in AGENTS.items():
-        if name not in selected or not present(name, home):
-            continue
-        files[spec['path']] = render(name).encode()
+        if name in agents:
+            files[spec['path']] = render(name).encode()
         for rel, data in skill_files(name).items() if spec['skills'] else ():
             files[f'{spec["skills"]}/{rel}'] = data
     for folder, scripts in HOOK_SCRIPTS.items():
-        if agent == 'codex':
+        if standalone:
             if folder != '.codex/hooks':
                 continue
             scripts = HOOK_SCRIPTS['.claude/hooks']
         for script in scripts:
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
-    files[RULES] = codex_rules(home)
+    if 'codex' in agents:
+        files[RULES] = codex_rules(home)
     user = vscode_user(home)
-    if 'copilot' in selected and present('copilot', home) and user:  # VS Code's local chat reads profile prompts
+    if 'copilot' in agents and user:  # VS Code's local chat reads profile prompts, not ~/.copilot
         header = "---\napplyTo: '**'\ndescription: agent-harness rules (edit the agent-harness repo)\n---\n\n"
         files[f'{user}/prompts/agent-harness.instructions.md'] = (header + render('copilot')).encode()
-    if 'pi' in selected and (home / PI_SETTINGS).is_file():
+    if 'pi' in agents and (home / PI_SETTINGS).is_file():
         try:
             files[PI_SETTINGS] = pi_settings(home)
         except ValueError:
             pass  # unparseable config: `check` reports it as invalid
-    if 'opencode' in selected and (home / OPENCODE_CONFIG).is_file():
+    if 'opencode' in agents and (home / OPENCODE_CONFIG).is_file():
         try:
             files[OPENCODE_CONFIG] = opencode_config(home)
         except ValueError:
             pass  # unparseable config: `check` reports it as invalid
-    if selected == ['codex'] or (home / CODEX_CONFIG).is_file():
+    if standalone or ('codex' in agents and (home / CODEX_CONFIG).is_file()):
         try:
-            files[CODEX_CONFIG] = codex_config(home, register=selected == ['codex'])
+            files[CODEX_CONFIG] = codex_config(home, register=standalone)
         except ValueError:
             pass  # unparseable config: `check` reports it as invalid
     for agent, rel in HOOK_CONFIGS.items():
-        if agent not in selected:
+        if agent not in agents:
             continue
         try:
-            files[rel] = hook_config(agent, home, standalone=selected == ['codex'])
+            files[rel] = hook_config(agent, home, standalone=standalone)
         except ValueError:
             pass  # unparseable config: never overwrite it; `check` reports it as invalid
     for f in sorted(SUBAGENTS.glob('*.toml')):
         source = tomllib.loads(f.read_text(encoding='utf-8'))
         for agent, (path, fmt) in SUBAGENT_FORMATS.items():
-            if agent in selected and present(agent, home):
+            if agent in agents:
                 files[path.format(source['name'])] = fmt(source, source[agent]).encode()
     for agent, source, target in (('opencode', 'opencode/agent-harness.ts', '.config/opencode/plugins/agent-harness.ts'),
                                   ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts')):
-        if agent in selected and present(agent, home):
+        if agent in agents:
             guard = (REPO / 'core' / source).read_text(encoding='utf-8')
             guard = guard.replace('{python}', json.dumps(python_for(home))).replace('{claude_hooks}', (home / '.claude/hooks').as_posix())
             files[target] = guard.encode()
-    if 'copilot' in selected and present('copilot', home):
+    if 'copilot' in agents:
         files['.copilot/hooks/agent-harness.json'] = copilot_hooks(home)
         try:
             if mcp := copilot_mcp(home):
                 files[COPILOT_MCP] = mcp
         except ValueError:
             pass  # unparseable config: `check` reports it as invalid
-    return files
+    return {rel: data for rel, data in files.items() if wanted(rel, agents)}
 
 
 def engram_mcp_commands(home):
@@ -545,14 +660,22 @@ RETIRED = [line.strip() for line in (REPO / 'core' / 'retired.txt').read_text(en
 RETIRED += [f'.codex/skills/{d.name}' for d in sorted(SKILLS.iterdir()) if d.is_dir()]
 
 
-def retired_paths(agent=None):
-    return [rel for rel in RETIRED if agent is None or rel.startswith('.codex/')]
+def backup_stamp():
+    return datetime.now().strftime('%Y%m%d-%H%M%S-%f')  # microseconds: two runs can share a second
 
 
-def install(home, dry_run=False, agent=None):
+def install(home, dry_run=False, agent=None, agents=None):
     changed = False
-    backup_dir = home / '.agent-harness' / 'backups' / time.strftime('%Y%m%d-%H%M%S')
-    for rel in retired_paths(agent):
+    chosen = {agent} if agent else selected(home) if agents is None else agents
+    backup_dir = home / '.agent-harness' / 'backups' / backup_stamp()
+    manifest = {'created': [], 'replaced': [], 'retired': []}
+
+    def record(kind, rel):  # written as it goes, so a failed install can still be restored
+        manifest[kind].append(rel)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        (backup_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+
+    for rel in retiring(home, {agent} if agent else agents):
         stale = home / rel
         if stale.exists():
             changed = True
@@ -561,8 +684,9 @@ def install(home, dry_run=False, agent=None):
                 continue
             (backup_dir / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(stale), str(backup_dir / rel))
+            record('retired', rel)
             print(f'retired {stale} -> {backup_dir / rel}')
-    for rel, content in outputs(home, agent).items():
+    for rel, content in outputs(home, agent, agents).items():
         target = home / rel
         if target.is_file() and target.read_bytes() == content:
             continue
@@ -574,14 +698,17 @@ def install(home, dry_run=False, agent=None):
             saved = backup_dir / rel
             saved.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, saved)
+            record('replaced', rel)
             print(f'backed up {target} -> {saved}')
+        else:
+            record('created', rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         print(f'installed {target}')
         if rel == HOOK_CONFIGS['codex']:
             print('Codex skips a changed hook until you trust it again in /hooks')
         changed = True
-    if agent is None and (commands := engram_mcp_commands(home)):  # Claude owns ~/.claude.json
+    if 'claude' in chosen and (commands := engram_mcp_commands(home)):  # Claude owns ~/.claude.json, so its CLI writes the entry
         changed = True
         claude = shutil.which('claude')
         if dry_run:
@@ -601,8 +728,50 @@ def install(home, dry_run=False, agent=None):
                     break
             print('registered the Engram MCP for Claude Code; restart it' if result.returncode == 0
                   else f'could not register the Engram MCP: {result.stderr.strip() or result.stdout.strip()}')
+    if agents is not None and not dry_run:
+        choice_file(home).parent.mkdir(parents=True, exist_ok=True)
+        choice_file(home).write_text('\n'.join(sorted(agents)) + '\n', encoding='utf-8', newline='\n')
     if not changed:
         print('no changes')
+
+
+def restore(home, stamp):
+    """Undo one install. What it takes away moves to a `-before-restore` folder; nothing is deleted."""
+    backups = home / '.agent-harness' / 'backups'
+    source = backups / stamp
+    if Path(stamp).name != stamp or not (source / 'manifest.json').is_file():
+        print(f'no install manifest in {source}; restore older backups by hand')
+        return 1
+    manifest = json.loads((source / 'manifest.json').read_text(encoding='utf-8'))
+    if missing := [rel for rel in manifest['replaced'] + manifest['retired'] if not os.path.lexists(source / rel)]:
+        print(f'{source} is incomplete, nothing changed; missing: {", ".join(missing)}')
+        return 1
+    kept = backups / f'{backup_stamp()}-before-restore'
+    for rel in manifest['created'] + manifest['retired']:
+        target = home / rel
+        if os.path.lexists(target):
+            (kept / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(target), str(kept / rel))
+            print(f'kept {target} -> {kept / rel}')
+    for rel in manifest['retired']:
+        saved, target = source / rel, home / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if saved.is_symlink():
+            target.symlink_to(os.readlink(saved))
+        elif saved.is_dir():
+            shutil.copytree(saved, target, symlinks=True)
+        else:
+            shutil.copy2(saved, target)
+        print(f'restored {target}')
+    for rel in manifest['replaced']:  # copied over, not moved: a symlinked dotfile stays a link
+        saved, target = source / rel, home / rel
+        if target.is_file():
+            (kept / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, kept / rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(saved, target)
+        print(f'restored {target}')
+    return 0
 
 
 SECRET_NAME = re.compile(r'token|secret|password|api_?key', re.I)
@@ -625,7 +794,8 @@ def check(home, agent=None, runtime=False):
         target = home / rel
         if not target.is_file() or target.read_bytes() != content:
             problems.append(f'drift: {target}')
-    problems += [f'stale: {home / rel}' for rel in retired_paths(agent) if (home / rel).exists()]
+    problems += [f'stale: {home / rel}' for rel in retiring(home, {agent} if agent else None) if (home / rel).exists()]
+    agents = {agent} if agent else selected(home)
     selftested = [rel.replace('.claude/', '.codex/') for rel in SELFTESTED] if agent else SELFTESTED
     for rel in selftested:
         script = home / rel
@@ -635,10 +805,8 @@ def check(home, agent=None, runtime=False):
             if result.returncode != 0:
                 problems.append(f'selftest failed: {script}')
     for rel, parse in CONFIGS.items():
-        if agent and not rel.startswith('.codex/'):
-            continue
         path = home / rel
-        if path.is_file():
+        if wanted(rel, agents) and path.is_file():
             try:
                 data = parse(path.read_text(encoding='utf-8'))
             except ValueError as error:  # JSONDecodeError and TOMLDecodeError are ValueErrors
@@ -877,6 +1045,7 @@ def doctor(home, agent=None):
     if agent == 'codex':
         return check(home, agent, runtime=True)
     findings = []
+    agents = selected(home)
     settings = home / '.claude/settings.json'
     if settings.is_file():
         overrides = json.loads(settings.read_text(encoding='utf-8')).get('skillOverrides', {})
@@ -918,18 +1087,19 @@ def doctor(home, agent=None):
                             'start lets the action through (claude update)')
     codex = home / CODEX_CONFIG
     try:
-        exposed = codex.is_file() and 'engram' in tomllib.loads(codex.read_text(encoding='utf-8')).get('mcp_servers', {}) \
+        exposed = 'codex' in agents and codex.is_file() and 'engram' in tomllib.loads(codex.read_text(encoding='utf-8')).get('mcp_servers', {}) \
             and 'ENGRAM_CLOUD_TOKEN' not in codex_shell_excludes(codex.read_text(encoding='utf-8'))
     except ValueError:
         exposed = False  # unparseable: `check` reports it
     if exposed:
         findings.append(f'Codex shell commands inherit ENGRAM_CLOUD_TOKEN: add it to '
                         f'shell_environment_policy.exclude in {codex}')
-    if commands := engram_mcp_commands(home):
+    if 'claude' in agents and (commands := engram_mcp_commands(home)):
         problem = 'is not registered for Claude Code' if len(commands) == 1 else 'for Claude Code has no command'
         findings.append(f'engram MCP {problem}, so its mem_* tools are missing '
                         '(run `bin/harness install` and restart Claude Code)')
-    findings += untrusted_codex_hooks(home)
+    if 'codex' in agents:
+        findings += untrusted_codex_hooks(home)
     if cg_update := codegraph_update():
         findings.append(f'codegraph update available: {cg_update} (npm install -g @colbymchenry/codegraph, '
                         'then `codegraph index` in each indexed repo)')
@@ -961,7 +1131,13 @@ def main(argv=None):
     inst = sub.add_parser('install')
     inst.add_argument('--home', type=Path, default=Path.home())
     inst.add_argument('--dry-run', action='store_true')
-    inst.add_argument('--agent', choices=['codex'])
+    pick = inst.add_mutually_exclusive_group()
+    pick.add_argument('--agent', choices=['codex'], help='Codex alone, with its own hook copies')
+    pick.add_argument('--agents', help=f'comma-separated: {",".join(AGENTS)}')
+    pick.add_argument('--choose', action='store_true', help='pick the agents again')
+    back = sub.add_parser('restore')
+    back.add_argument('stamp')
+    back.add_argument('--home', type=Path, default=Path.home())
     checking = sub.add_parser('check')
     checking.add_argument('--home', type=Path, default=Path.home())
     checking.add_argument('--agent', choices=['codex'])
@@ -979,7 +1155,20 @@ def main(argv=None):
     if args.command == 'render':
         sys.stdout.write(render(args.agent))
     elif args.command == 'install':
-        install(args.home, args.dry_run, args.agent)
+        agents = None
+        if args.agents is not None:
+            agents = set(args.agents.split(','))
+            if absent := sorted(agents - detected(args.home)):
+                print(f'not found on this PC: {", ".join(absent)}; found: {", ".join(sorted(detected(args.home)))}')
+                return 1
+        elif args.agent is None and (args.choose or (sys.stdin.isatty() and sys.stdout.isatty() and not saved_choice(args.home))):
+            agents = choose_agents(args.home)
+            if not agents:
+                print('nothing selected, nothing installed')
+                return 0
+        install(args.home, args.dry_run, args.agent, agents)
+    elif args.command == 'restore':
+        return restore(args.home, args.stamp)
     elif args.command == 'check':
         return check(args.home, args.agent, args.runtime)
     elif args.command == 'doctor':

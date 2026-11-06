@@ -1,6 +1,7 @@
 """Claude Code hooks that enforce Engram and CodeGraph usage.
 
   stop     Stop hook: blocks once when a substantive turn ends without an Engram write.
+  scope    Stop hook: blocks once when a turn's edits are large, to compare them with the request.
   pretool  PreToolUse hook (Grep|Glob|Bash): denies broad search in a CodeGraph-indexed
            repo until the session has queried CodeGraph at least once.
 
@@ -16,6 +17,9 @@ from pathlib import Path
 ENGRAM_WRITES = ('mem_save', 'mem_update', 'mem_session_summary')
 EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}
 SUBSTANTIVE_TOOL_CALLS = 8
+# ponytail: rough size proxy from Edit/Write input; shell and subagent edits go unseen, Codex diffs count context.
+SCOPE_FILES = 5
+SCOPE_LINES = 150
 # Tools that organize or recall work without producing anything worth remembering.
 BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite')
 MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
@@ -61,7 +65,7 @@ def codex_tool_uses(item):
     if kind == 'McpToolCall':
         return [{'name': f'mcp__{item.get("server")}__{item.get("tool")}', 'input': {}}]
     if kind == 'FileChange':
-        return [{'name': 'Edit', 'input': {}}]
+        return [{'name': 'Edit', 'input': {'changes': item.get('changes') or {}}}]
     return []
 
 
@@ -138,6 +142,35 @@ def indexed_root(cwd):
         if (d / '.git').exists():
             return None
     return None
+
+
+def edit_size(turn):
+    files, lines = set(), 0
+    for tool in turn:
+        if tool.get('name') not in EDIT_TOOLS:
+            continue
+        given = tool.get('input', {})
+        if 'changes' in given:  # Codex: path -> {type, unified_diff or content}
+            files.update(given['changes'])
+            texts = [c.get('unified_diff') or c.get('content') for c in given['changes'].values()]
+        else:
+            files.add(given.get('file_path') or given.get('notebook_path'))
+            texts = [given.get('new_string'), given.get('content'), given.get('new_source'),
+                     *(e.get('new_string') for e in given.get('edits', []))]
+        lines += sum(str(t or '').count('\n') for t in texts)
+    return len(files), lines
+
+
+def scope_decision(data):
+    if data.get('stop_hook_active'):
+        return None
+    files, lines = edit_size(last_turn_tools(data.get('transcript_path', '')))
+    if files < SCOPE_FILES and lines < SCOPE_LINES:
+        return None
+    return {'decision': 'block', 'reason': (
+        f'Alcance: este turno editó {files} archivos y unas {lines} líneas. Compara cada cambio con el pedido '
+        'del usuario: revierte lo que no se pidió o di en una línea por qué hacía falta. '
+        'No repitas la respuesta anterior.')}
 
 
 def pretool_decision(data):
@@ -268,6 +301,25 @@ def selftest():
         path = codex_transcript(prompt, used, zst=True)
         assert pretool_decision({'tool_name': 'Bash', 'cwd': repo, 'transcript_path': path,
                                  'tool_input': {'command': 'rg foo'}}) is None
+    small = transcript(('prompt', 'x'), ('Edit', {'file_path': 'a', 'new_string': 'x'}))
+    assert scope_decision({'transcript_path': small}) is None
+    wide = transcript(('prompt', 'x'), *[('Edit', {'file_path': f, 'new_string': 'x'}) for f in 'abcde'])
+    assert scope_decision({'transcript_path': wide})['decision'] == 'block'
+    assert scope_decision({'transcript_path': wide, 'stop_hook_active': True}) is None
+    long_write = ('Write', {'file_path': 'a', 'content': 'x\n' * 150})
+    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), long_write)})['decision'] == 'block'
+    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), long_write, ('prompt', 'y'))}) is None
+    cx_wide = codex_transcript(prompt, {'type': 'FileChange', 'changes': {
+        f: {'type': 'update', 'unified_diff': '+x\n'} for f in 'abcde'}})
+    assert scope_decision({'transcript_path': cx_wide})['decision'] == 'block'
+    cx_small = codex_transcript(prompt, {'type': 'FileChange', 'changes': {'a': {'type': 'update', 'unified_diff': '+x\n'}}})
+    assert scope_decision({'transcript_path': cx_small}) is None
+    cx_added = codex_transcript(prompt, {'type': 'FileChange', 'changes': {'a': {'type': 'add', 'content': 'x\n' * 150}}})
+    assert scope_decision({'transcript_path': cx_added})['decision'] == 'block'
+    notebooks = [('NotebookEdit', {'notebook_path': f, 'new_source': 'x'}) for f in 'abcde']
+    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), *notebooks)})['decision'] == 'block'
+    multi = ('MultiEdit', {'file_path': 'a', 'edits': [{'new_string': 'x\n' * 150}]})
+    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), multi)})['decision'] == 'block'
     # An unreadable transcript fails open instead of blocking every search.
     assert pretool_decision({'tool_name': 'Grep', 'cwd': repo, 'transcript_path': '/nonexistent'}) is None
     plain = tempfile.mkdtemp()
@@ -290,7 +342,7 @@ def main():
         return selftest()
     try:
         data = json.loads(sys.stdin.buffer.read())  # bytes: UTF-8 whatever the locale
-        result = {'stop': stop_decision, 'pretool': pretool_decision}[mode](data)
+        result = {'stop': stop_decision, 'scope': scope_decision, 'pretool': pretool_decision}[mode](data)
     except Exception:
         return  # fail open: never wedge a session on a hook bug
     if result:

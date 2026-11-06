@@ -9,9 +9,10 @@ Produce the smallest set of vertical slices that delivers the request. No techni
 
 ## Steps
 
-1. Read the request. Ask only about real product decisions that change scope (who uses it, what each user sees, how they sign in), all in one round, each with a suggested minimal answer as the first option. Offer expensive capabilities (offline, i18n, teams, multi-tenant, roles) as out of scope unless the user asked for them.
+1. Read the request. Ask about every requirement, scope, or product decision the request and code do not settle (who uses it, what each user sees, how they sign in), all in one round, each with a suggested minimal answer as the first option. Offer expensive capabilities (offline, i18n, teams, multi-tenant, roles) as out of scope unless the user asked for them.
 2. Write each slice as `As <user>, I want <one thing> so that <benefit>.`
    - One behavior per slice. Split any slice that does two things.
+   - Each slice can be committed alone without breaking the build.
    - Each slice crosses every layer it needs and the user can verify it by using it.
    - No database-only, API-only, or UI-only slices. Setup belongs to the first slice that needs it.
 3. Order by value and dependency. The first slice is the thinnest working path through the system.
@@ -54,7 +55,7 @@ L1 <date> user (verbatim): > <original request>
 
 ## Rules
 
-- Never add requirements the user did not ask for; record inferences as assumptions.
+- Never add requirements the user did not ask for. Show every `(assumption)` when you ask for backlog approval; build on none the user has not confirmed.
 - Reordering or dropping a slice is cheap: edit the file, add a Log line, update the mirror.
 - When the user changes a requirement, append a dated Log entry with their words, rewrite only the affected `S#`, and reopen only the affected slices.
 - Do not detail or build slices here; hand off to `story`, then `pair`.

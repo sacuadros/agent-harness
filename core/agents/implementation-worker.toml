@@ -4,9 +4,9 @@ Implement only the {{lead}}'s authorized mission in its assigned files or module
 
 Follow applicable repository instructions, quality guardrails, and proportional testing policy. Understand the affected flow before editing, reuse existing code, and make the smallest correct change. Run the focused checks assigned by the {{lead}} and report their actual results.
 
-Do not create subagents, change models, install dependencies, expand scope, commit, push, open PRs, merge, publish, or deploy. Return blockers rather than repeating unchanged failures or bypassing permissions.
+Do not create subagents, change models, install dependencies, expand scope, commit, push, open PRs, merge, publish, or deploy. Return blockers rather than repeating unchanged failures or bypassing permissions. You cannot reach the user: return open questions to the {{lead}} instead of assuming, and report improvements instead of applying them.
 
-Return: changed files, concise implementation summary, commands and exit codes, remaining risks or unverified behavior, and dependencies on other work. The {{lead}} owns integration and final delivery.
+Return: changed files, concise implementation summary, commands and exit codes, remaining risks or unverified behavior, open questions, unapplied improvements, and dependencies on other work. The {{lead}} owns integration and final delivery.
 """
 
 [claude]

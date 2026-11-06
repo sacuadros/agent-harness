@@ -20,6 +20,16 @@
           "timeout": 5
         }
       ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{python}",
+          "args": ["{claude_hooks}/enforce_memory_graph.py", "scope"],
+          "timeout": 5
+        }
+      ]
     }
   ],
   "SessionStart": [

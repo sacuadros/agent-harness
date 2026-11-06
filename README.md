@@ -10,16 +10,19 @@ One source of rules, skills, subagents, and guard hooks for the coding agents I 
 | Pi | `~/.pi/agent/AGENTS.md` | reads `~/.agents/skills` | `~/.pi/agent/agents/*.md` (pi-subagents) | extension with confirmations |
 | GitHub Copilot | `~/.copilot/copilot-instructions.md` and the VS Code prompts folder | reads `~/.agents/skills` | `~/.copilot/agents/*.agent.md` | `~/.copilot/hooks/agent-harness.json` |
 
-OpenCode, Pi, and Copilot are managed only on PCs where their config folder already exists.
+The first `install` in a terminal lists the agents it finds on this PC, by their own config or command, and lets you pick. It remembers the choice in `~/.agent-harness/agents`, and later `install`, `check`, and `doctor` runs follow it. To change it, run `bin/harness install --choose`, or skip the picker with `--agents claude,codex`. Dropping an agent leaves its files in place. Some files are shared: every agent's guards run from `~/.claude/hooks`, and every agent but Claude Code reads the skills in `~/.agents/skills`.
+
+Without a terminal or a saved choice, `install` covers Claude Code, Codex, and any of OpenCode, Pi, and Copilot whose config folder exists. On Windows the picker is a numbered prompt, because Python ships there without `curses`.
 
 Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` removes the `~/.claude/skills` entry earlier versions added to Pi's `skills` setting, so a third-party skill that lives only in `~/.claude/skills` no longer reaches Pi; install it in `~/.agents/skills` too. OpenCode reads both folders and sees each harness skill twice, with the same content.
 
 ## What the harness enforces
 
-- **Slice Flow** instead of upfront specs: a backlog of one-line vertical slices, refined just in time (`story`) and built test by test (`pair`). You approve the backlog once; the agent builds every slice on its own and stops only for product decisions, alarms, or approvals. Commits and pushes always wait for you. Say "pair" or "con pausas" to slow it down.
+- **Slice Flow** instead of upfront specs: a backlog of one-line vertical slices, refined just in time (`story`) and built test by test (`pair`). You approve the backlog once; the agent builds every slice on its own and stops only for open requirements or decisions, alarms, or approvals. Commits and pushes always wait for you. Say "pair" or "con pausas" to slow it down.
 - **Guards** shared by every agent (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution, approval for push/SSH/PR/publish/deploy, no reads of credential files or Keychain secrets, no CodeGraph lifecycle commands, and a backup before editing global agent config. The same rules cover MCP tools that run commands (such as Desktop Commander). A guard that errors or cannot start blocks the action instead of allowing it; Claude Code needs 2.1.295 or newer for the second part.
 - **Least privilege by configuration:** Claude subagents cannot spawn their own (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), Copilot subagents get an explicit `tools:` list without `agent`, and Codex shell commands do not inherit `ENGRAM_CLOUD_TOKEN`, which only its Engram MCP receives.
 - **Memory and code-graph discipline** in Claude Code and Codex (`core/hooks/enforce_memory_graph.py`): save Engram memory after substantive turns, and query CodeGraph before broad searches in indexed repos.
+- **Scope check** in Claude Code and Codex (`scope` mode of the same hook): a turn whose edits reach 5 files or 150 lines is asked once to compare them with the request. It reads Edit and Write input, so shell and subagent edits go unseen.
 - **Delegation only for named reasons** (exploration, parallel writers, noisy checks, independent review, context backstop).
 
 ## Requirements
@@ -35,7 +38,7 @@ Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` 
 git clone <this repo> ~/personal-repos/agent-harness
 cd ~/personal-repos/agent-harness
 bin/harness install --dry-run   # see what would change
-bin/harness install             # write it; replaced files are backed up first
+bin/harness install             # pick the agents and write; replaced files are backed up first
 bin/harness check               # exit 1 on drift, broken config, failed hook selftest, or literal secrets
 bin/harness doctor              # read-only report: leftovers, PATH duplicates, version drift
 ```
@@ -147,7 +150,7 @@ git pull; if ($?) { py -3 bin/harness install }; if ($?) { py -3 bin/harness che
 
 ## Backups and rollback
 
-Every file `install` replaces or retires is copied first to `~/.agent-harness/backups/<timestamp>/`, keeping its path under your home. To roll back one file, copy it back from there.
+Every file `install` replaces or retires is copied first to `~/.agent-harness/backups/<timestamp>/`, keeping its path under your home, with a `manifest.json` that also lists the files it created. To undo a whole install, run `bin/harness restore <timestamp>`. What that removes moves to a `<timestamp>-before-restore` folder. `~/.claude.json` and the Engram MCP entry are not restored, and backups from before the manifest are copied back by hand. After a restore that touches `~/.codex/hooks.json`, trust the hooks again in Codex with `/hooks`.
 
 ## What is managed and what is left alone
 

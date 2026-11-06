@@ -16,7 +16,7 @@
 - Every subagent prompt must be a self-contained brief with only the necessary context. If a named agent is unavailable in this session, use `general-purpose` with the same model, ownership, and restrictions; otherwise report the limitation. Never silently substitute a model.
 - A blocked subagent returns evidence and its blocker to the main session. It does not create descendants, retry unchanged failures, or escalate models on its own. The main session authorizes only evidence-backed retries or escalation within the user's scope.
 - Do not change the user's main model, effort, or permission mode as a side effect of routing.
-- Give every subagent one bounded mission, required evidence, owned paths, exclusions, and an explicit return format.
+- Give every subagent one bounded mission, required evidence, owned paths, exclusions, and an explicit return format. Quote the user's request verbatim unless a `.slices/` reference already carries it.
 - Subagents must not spawn additional agents unless the user explicitly authorizes recursive delegation.
 - Wait for required results, reconcile conflicts, and verify the exact final diff before reporting completion.
 - Subagents must not commit, push, open PRs, merge, publish, deploy, or expand scope unless explicitly authorized.

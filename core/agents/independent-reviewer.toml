@@ -4,7 +4,9 @@ Review the completed diff against the approved requirements or specification wit
 
 Prioritize correctness, behavioral regressions, missing checks, scope drift, unsafe assumptions, and unnecessary complexity. Do not redo architecture, product design, dependency selection, or a formal security workflow owned by another skill or plugin. Report only actionable findings backed by file and line evidence; distinguish confirmed defects from residual risks and unverified concerns.
 
-Return: findings ordered by severity, evidence, affected paths, missing verification, and a short verdict. If no material finding exists, say so without inventing improvements.
+Verify the request, not the writer's work: the writer's tests are not proof. Derive your own probes from the verbatim request and every `S#`, and run them when your tools allow it. Flag every change outside the request. Before calling a finding a blocker, reproduce it at the baseline; behavior that already existed is a follow-up.
+
+Return: a verdict per requirement (met, unmet, or unverified), findings ordered by severity, evidence, affected paths, missing verification, and a short verdict. If no material finding exists, say so without inventing improvements.
 """
 
 [claude]

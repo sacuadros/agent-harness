@@ -16,7 +16,7 @@
 - Model-specific missions must include a self-contained brief and only the necessary inherited context. Follow the runtime's fork/model compatibility rules; if the named role is unavailable in this session, use a generic agent with the same model, effort, ownership and restrictions when permitted. Otherwise report the limitation; never silently substitute a model.
 - A blocked subagent returns evidence and its blocker to the primary agent. It does not create descendants, retry unchanged failures, or escalate models on its own. The primary agent authorizes only evidence-backed retries or escalation within the user's scope.
 - Planning starts at medium effort; use high or max only for a concrete difficulty, not merely because planning mode is active. Do not change the user's main model or increase global concurrency as a side effect of routing. Verify effective model and effort when validating a routing change; model self-reports are not proof.
-- Give every subagent one bounded mission, required evidence, owned paths, exclusions, and an explicit return format.
+- Give every subagent one bounded mission, required evidence, owned paths, exclusions, and an explicit return format. Quote the user's request verbatim unless a `.slices/` reference already carries it.
 - Subagents must not spawn additional agents unless the user explicitly authorizes recursive delegation.
 - Wait for required results, reconcile conflicts, and verify the exact final diff before reporting completion.
 - Subagents must not commit, push, open PRs, merge, publish, deploy, or expand scope unless explicitly authorized.

@@ -1,6 +1,7 @@
 ---
 name: promote-project-convention
-description: Use only when the user explicitly asks to turn a correction, decision, or recurring project convention into version-controlled repository documentation.
+description: Use only when the user invokes this skill to turn a correction, decision, or recurring project convention into version-controlled repository documentation.
+disable-model-invocation: true
 ---
 
 # Promote Project Convention
