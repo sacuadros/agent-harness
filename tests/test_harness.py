@@ -32,6 +32,17 @@ def tree(root):
             if f.is_file() and '.bak' not in f.name}
 
 
+def node_strips_types():
+    try:
+        out = subprocess.run(['node', '--version'], capture_output=True, encoding='utf-8').stdout
+    except OSError:
+        return False
+    return bool(found := re.match(r'v(\d+)\.(\d+)', out)) and tuple(map(int, found.groups())) >= (22, 6)
+
+
+NODE_STRIPS_TYPES = node_strips_types()
+
+
 SPAWN = {'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '1'}  # install always sets it
 
 
@@ -780,6 +791,35 @@ class OpenCode(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'drift: {plugin}', result.stdout)
 
+    @unittest.skipIf(os.name == 'nt', 'the harness installs OpenCode on macOS and Linux only')
+    @unittest.skipUnless(NODE_STRIPS_TYPES, 'needs Node 22.6+ to load the TypeScript plugin')
+    def test_guard_plugin_denies_on_opencode_1_and_2(self):
+        # OpenCode 2 loads only a default export with an id and setup(); 1.x calls server() or the named export.
+        (self.home / '.config' / 'opencode').mkdir(parents=True)
+        harness('install', '--home', str(self.home))
+        plugin = (self.home / '.config' / 'opencode' / 'plugins' / 'agent-harness.ts').as_uri()
+        rules = self.home / '.claude' / 'CLAUDE.md'  # global config: backed up before V2 write and patch edits
+        patch = f'*** Begin Patch\n*** Update File: {rules}\n@@\n-a\n+b\n*** End Patch'
+        script = f"""
+            const mod = await import({json.dumps(plugin)})
+            const denied = async (call) => {{ try {{ await call(); return false }} catch {{ return true }} }}
+            let hook
+            await mod.default.setup({{ tool: {{ hook: async (name, cb) => {{ if (name === "execute.before") hook = cb }} }} }})
+            const v1 = await mod.default.server()
+            console.log(JSON.stringify([mod.default.id,
+              await denied(() => hook({{ tool: "shell", sessionID: "s", input: {{ command: "codegraph uninit" }} }})),
+              await denied(() => hook({{ tool: "shell", sessionID: "s", input: {{ command: "ls" }} }})),
+              await denied(() => v1["tool.execute.before"]({{ tool: "bash", sessionID: "s" }}, {{ args: {{ command: "codegraph uninit" }} }}))]))
+            await hook({{ tool: "write", sessionID: "write", input: {{ path: {json.dumps(str(rules))} }} }})
+            await hook({{ tool: "patch", sessionID: "patch", input: {{ patchText: {json.dumps(patch)} }} }})
+        """
+        result = subprocess.run(['node', '--experimental-strip-types', '--no-warnings', '--input-type=module', '-e', script],
+                                capture_output=True, encoding='utf-8', timeout=60, env={**os.environ, 'HOME': str(self.home)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ['agent-harness', True, False, True])
+        backups = sorted(f.name.split('.')[-2] for f in (self.home / '.claude' / 'backups').glob('claude__CLAUDE.md.*'))
+        self.assertEqual(backups, ['patch', 'write'])
+
     def test_stale_skill_copies_are_retired_to_a_backup(self):
         stale = self.home / '.config' / 'opencode' / 'skills' / 'unslop' / 'SKILL.md'
         stale.parent.mkdir(parents=True)
@@ -1183,19 +1223,6 @@ class Doctor(unittest.TestCase):
         path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
         self.assertIn('claude code 2.1.318 can let actions past the guards', self.doctor(PATH=path, VERSION='2.1.318'))
         self.assertNotIn('past the guards', self.doctor(PATH=path, VERSION='2.1.319'))
-
-    @unittest.skipIf(os.name == 'nt', 'the fake opencode is a shell script')
-    def test_opencode_2_runs_without_the_guards(self):
-        # OpenCode 2 does not load V1 plugins, and a skipped plugin raises no error.
-        bin_dir = Path(tempfile.mkdtemp())
-        fake = bin_dir / 'opencode'
-        fake.write_text('#!/bin/sh\necho "$VERSION"\n', encoding='utf-8', newline='\n')
-        fake.chmod(0o755)
-        (self.home / '.config' / 'opencode').mkdir(parents=True)
-        path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
-        self.assertIn('opencode 2.2.6 runs without the harness guards', self.doctor(PATH=path, VERSION='2.2.6'))
-        self.assertIn('opencode 2.0.0 runs without the harness guards', self.doctor(PATH=path, VERSION='opencode v2.0.0'))
-        self.assertNotIn('without the harness guards', self.doctor(PATH=path, VERSION='1.18.30'))
 
     @unittest.skipIf(os.name == 'nt', 'the fake engram is a shell script')
     def test_engram_update_comes_from_the_latest_release(self):

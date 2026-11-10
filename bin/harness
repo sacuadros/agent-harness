@@ -1092,14 +1092,6 @@ def doctor(home, agent=None):
                             'an env-prefixed Bash command could bypass permissions and a new worktree could escape the '
                             'sandbox; older versions also skip Bash hooks for Monitor or let a failing guard through '
                             '(claude update)')
-    if 'opencode' in agents and (command := cli_argv('opencode', '--version')):
-        try:
-            out = subprocess.run(command, capture_output=True, encoding='utf-8', errors='replace', timeout=30).stdout
-        except (OSError, subprocess.SubprocessError):
-            out = ''
-        if (found := re.search(r'(?m)^\s*(?:opencode\s+)?v?((\d+)\.\S+)', out)) and int(found[2]) >= 2:
-            findings.append(f'opencode {found[1]} runs without the harness guards: OpenCode 2 does not load '
-                            'V1 plugins (stay on OpenCode 1.x until the plugin is ported to V2)')
     codex = home / CODEX_CONFIG
     try:
         exposed = 'codex' in agents and codex.is_file() and 'engram' in tomllib.loads(codex.read_text(encoding='utf-8')).get('mcp_servers', {}) \

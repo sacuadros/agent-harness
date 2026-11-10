@@ -20,15 +20,31 @@ function guard(mode: string, payload: object, extra: string[] = []) {
   }
 }
 
-export const AgentHarness = async () => ({
-  "tool.execute.before": async (input: { tool: string; sessionID: string }, output: { args: any }) => {
-    if (input.tool === "bash" || input.tool === "shell") {  // OpenCode 2.2.5 runs bash calls as shell
-      const out = guard("bash", { tool_input: { command: output.args?.command ?? "" } }, ["--codex"])
-      if (out?.hookSpecificOutput?.permissionDecision === "deny") {
-        throw new Error(out.hookSpecificOutput.permissionDecisionReason)
-      }
-    } else if ((input.tool === "edit" || input.tool === "write") && output.args?.filePath) {
-      guard("backup", { session_id: input.sessionID, tool_input: { file_path: output.args.filePath } })
+function before(tool: string, sessionID: string, command?: string, filePath?: string, patchText?: string) {
+  if (tool === "bash" || tool === "shell") {  // V2 names it shell; OpenCode 2.2.5 ran V1 bash calls as shell too
+    const out = guard("bash", { tool_input: { command: command ?? "" } }, ["--codex"])
+    if (out?.hookSpecificOutput?.permissionDecision === "deny") {
+      throw new Error(out.hookSpecificOutput.permissionDecisionReason)
     }
-  },
+  } else if ((tool === "edit" || tool === "write") && filePath) {
+    guard("backup", { session_id: sessionID, tool_input: { file_path: filePath } })
+  } else if ((tool === "patch" || tool === "apply_patch") && patchText) {  // relative paths resolve from cwd
+    guard("backup", { session_id: sessionID, tool_name: "apply_patch", cwd: process.cwd(), tool_input: { command: patchText } })
+  }
+}
+
+export const AgentHarness = async () => ({
+  "tool.execute.before": async (input: { tool: string; sessionID: string }, output: { args: any }) =>
+    before(input.tool, input.sessionID, output.args?.command, output.args?.filePath, output.args?.patchText),
 })
+
+// OpenCode 1.x with a default export calls its server(); OpenCode 2 loads only the id and setup(),
+// and a throw in execute.before fails that call.
+export default {
+  id: "agent-harness",
+  server: AgentHarness,
+  async setup(ctx: any) {
+    await ctx.tool.hook("execute.before", async (event: { tool: string; sessionID: string; input: any }) =>
+      before(event.tool, event.sessionID, event.input?.command, event.input?.path, event.input?.patchText))
+  },
+}

@@ -29,7 +29,6 @@ Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` 
 
 - macOS, Linux, or Windows 10/11 (native, not WSL), Git, and Python 3.11 or newer. Python 3.14 adds the Codex compressed-transcript checks; on older versions the hook skips them.
 - On Windows the harness manages Claude Code, Codex, and GitHub Copilot; OpenCode and Pi are macOS and Linux for now.
-- OpenCode 1.x. OpenCode 2 does not run V1 plugins such as the harness one, so its guards do not run there; `bin/harness doctor` reports it.
 - The agents you use, already installed and signed in.
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) and [CodeGraph](https://github.com/colbymchenry/codegraph), which the rules expect.
 
