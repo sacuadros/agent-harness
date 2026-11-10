@@ -513,19 +513,29 @@ def label(agent):
     return AGENTS[agent]['vars']['agent']
 
 
+def where(agent):
+    return f'~/{Path(AGENTS[agent]["path"]).parent.as_posix()}'
+
+
+KEEP_NOTE = 'Unticked agents keep their files.'
+
+
 def pick_curses(names, ticked, missing):
+    os.environ.setdefault('ESCDELAY', '25')  # curses waits a full second to tell Esc from an arrow key otherwise
+    width = max(len(label(name)) for name in names)
+
     def screen_loop(screen):
         curses.curs_set(0)
-        at, chosen = 0, set(ticked)
+        at, chosen, note = 0, set(ticked), ''
         while True:
-            rows = [f'{">" if i == at else " "} [{"x" if name in chosen else " "}] {label(name)}'
+            rows = [f'{">" if i == at else " "} [{"x" if name in chosen else " "}] {label(name):<{width}}  {where(name)}'
                     for i, name in enumerate(names)]
             footer = [f'Not found: {", ".join(missing)}'] if missing else []
             screen.erase()
-            for y, line in enumerate(['agent-harness: where to install', '', *rows, '', *footer,
-                                      'Up/Down move, Space ticks, Enter installs, q cancels']):
+            for y, line in enumerate(['agent-harness: where to install', '', *rows, '', *footer, KEEP_NOTE,
+                                      note or 'Up/Down move, Space ticks, Enter installs, q cancels']):
                 screen.addnstr(y, 0, line, curses.COLS - 1)
-            key = screen.getch()
+            key, note = screen.getch(), ''
             if key in (curses.KEY_UP, ord('k')):
                 at = (at - 1) % len(names)
             elif key in (curses.KEY_DOWN, ord('j')):
@@ -533,7 +543,9 @@ def pick_curses(names, ticked, missing):
             elif key == ord(' '):
                 chosen ^= {names[at]}
             elif key in (10, 13, curses.KEY_ENTER):
-                return chosen
+                if chosen:
+                    return chosen
+                note = 'Tick at least one agent, or press q to cancel'
             elif key in (ord('q'), 27):
                 return None
     return curses.wrapper(screen_loop)
@@ -541,14 +553,20 @@ def pick_curses(names, ticked, missing):
 
 def pick_text(names, ticked, missing):
     for i, name in enumerate(names, 1):
-        print(f'  {i}. [{"x" if name in ticked else " "}] {label(name)}')
+        print(f'  {i}. [{"x" if name in ticked else " "}] {label(name)}  {where(name)}')
     if missing:
         print(f'Not found: {", ".join(missing)}')
+    print(KEEP_NOTE)
     default = ','.join(str(i) for i, name in enumerate(names, 1) if name in ticked)
-    answer = input(f'Numbers to install [{default}], q cancels: ').strip().lower()
-    if answer == 'q':
-        return None
-    return {names[int(n) - 1] for n in re.findall(r'\d+', answer or default) if 0 < int(n) <= len(names)}
+    while True:
+        answer = input(f'Numbers or names to install [{default}], q cancels: ').strip().lower()
+        if answer == 'q':
+            return None
+        words = re.findall(r'[\w-]+', answer or default)
+        picked = {names[int(w) - 1] if w.isdigit() and 0 < int(w) <= len(names) else w for w in words}
+        if words and picked <= set(names):
+            return picked
+        print(f'not an agent here: {answer or "(none)"}; use the numbers or names above')
 
 
 def choose_agents(home):

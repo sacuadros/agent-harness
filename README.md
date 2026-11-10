@@ -6,15 +6,15 @@ One source of rules, skills, subagents, and guard hooks for the coding agents I 
 |---|---|---|---|---|
 | Claude Code (CLI and the Claude app's Code tab) | `~/.claude/CLAUDE.md` | `~/.claude/skills` | `~/.claude/agents/*.md` | hooks in `~/.claude/settings.json` |
 | Codex | `~/.codex/AGENTS.md` | `~/.agents/skills` | `~/.codex/agents/*.toml` | `~/.codex/hooks.json` + execpolicy rules |
-| OpenCode | `~/.config/opencode/AGENTS.md` | reads `~/.claude/skills` | `~/.config/opencode/agents/*.md` | plugin + `permission.bash` asks |
+| OpenCode | `~/.config/opencode/AGENTS.md` | reads `~/.claude/skills` and `~/.agents/skills` | `~/.config/opencode/agents/*.md` | plugin for OpenCode 1.x and 2 + `permission.bash` asks |
 | Pi | `~/.pi/agent/AGENTS.md` | reads `~/.agents/skills` | `~/.pi/agent/agents/*.md` (pi-subagents) | extension with confirmations |
 | GitHub Copilot | `~/.copilot/copilot-instructions.md` and the VS Code prompts folder | reads `~/.agents/skills` | `~/.copilot/agents/*.agent.md` | `~/.copilot/hooks/agent-harness.json` |
 
-The first `install` in a terminal lists the agents it finds on this PC, by their own config or command, and lets you pick. It remembers the choice in `~/.agent-harness/agents`, and later `install`, `check`, and `doctor` runs follow it. To change it, run `bin/harness install --choose`, or skip the picker with `--agents claude,codex`. Dropping an agent leaves its files in place. Some files are shared: every agent's guards run from `~/.claude/hooks`, and every agent but Claude Code reads the skills in `~/.agents/skills`.
+The first `install` in a terminal lists the agents it finds on this PC, by their own config or command, with the folder each one uses, and lets you pick at least one. It remembers the choice in `~/.agent-harness/agents`, and later `install`, `check`, and `doctor` runs follow it. To change it, run `bin/harness install --choose`, or skip the picker with `--agents claude,codex`. Dropping an agent leaves its files in place. Some files are shared: every agent's guards run from `~/.claude/hooks`, and every agent but Claude Code reads the skills in `~/.agents/skills`.
 
-Without a terminal or a saved choice, `install` covers Claude Code, Codex, and any of OpenCode, Pi, and Copilot whose config folder exists. On Windows the picker is a numbered prompt, because Python ships there without `curses`.
+With no terminal and no saved choice, `install` covers Claude Code, Codex, and any of OpenCode, Pi, and Copilot whose config folder exists. On Windows the picker is a numbered prompt, because Python ships there without `curses`; it takes numbers or names (`claude,codex`) and asks again when an answer matches no agent.
 
-Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` removes the `~/.claude/skills` entry earlier versions added to Pi's `skills` setting, so a third-party skill that lives only in `~/.claude/skills` no longer reaches Pi; install it in `~/.agents/skills` too. OpenCode reads both folders and sees each harness skill twice, with the same content.
+`install` removes the `~/.claude/skills` entry earlier versions added to Pi's `skills` setting, so a third-party skill that lives only in `~/.claude/skills` no longer reaches Pi; install it in `~/.agents/skills` too. OpenCode reads both folders and sees each harness skill twice, with the same content.
 
 ## What the harness enforces
 
@@ -35,12 +35,12 @@ Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` 
 ## Set up a PC
 
 ```bash
-git clone <this repo> ~/personal-repos/agent-harness
+git clone https://github.com/sacuadros/agent-harness.git ~/personal-repos/agent-harness
 cd ~/personal-repos/agent-harness
 bin/harness install --dry-run   # see what would change
 bin/harness install             # pick the agents and write; replaced files are backed up first
 bin/harness check               # exit 1 on drift, broken config, failed hook selftest, or literal secrets
-bin/harness doctor              # read-only report: leftovers, PATH duplicates, version drift
+bin/harness doctor              # read-only report: outdated Claude Code, Engram, and CodeGraph, Engram MCP and cloud status, Codex hook trust, leftovers
 ```
 
 Codex asks you to trust new hooks the first time it sees them. Approve them once in the Codex app. `bin/harness doctor` reports harness hooks Codex has not trusted yet, and an outdated CodeGraph, whose upgrades ask for a `codegraph index` in each indexed repo.
@@ -54,7 +54,7 @@ In PowerShell; `~` in this README means `%USERPROFILE%`:
 ```powershell
 winget install --id Git.Git -e                # Git, plus the Git Bash that Claude Code uses when present
 winget install --id Python.Python.3.14 -e     # Python and the py launcher the hooks run through
-git clone <this repo> $HOME\personal-repos\agent-harness
+git clone https://github.com/sacuadros/agent-harness.git $HOME\personal-repos\agent-harness
 cd $HOME\personal-repos\agent-harness
 py -3 bin/harness install --dry-run
 py -3 bin/harness install
@@ -105,39 +105,6 @@ Restart Claude Code and the ChatGPT app so they pick it up. Codex receives it th
 
 ## Sync
 
-To manage only Codex, add `--agent codex` to `install` and `check`:
-
-```powershell
-python bin/harness install --agent codex --dry-run
-python bin/harness install --agent codex
-python bin/harness check --agent codex
-```
-
-This mode installs self-contained hooks under `~/.codex/hooks`, Codex instructions and subagents,
-and the harness skills under `~/.agents/skills`. It preserves other agents' files and third-party
-skills. Replaced Codex files use the same timestamped backups described below.
-When `engram` or `codegraph` is on PATH, this mode also registers missing local MCP servers.
-Existing server entries, including remote or disabled ones, are preserved. Engram receives
-`ENGRAM_CLOUD_TOKEN` by environment-variable name; its value is never written to the config.
-
-`check --agent codex` verifies files, config and hook selftests. To also check effective hook
-activation and integration prerequisites, run:
-
-```powershell
-python bin/harness doctor --agent codex
-# Equivalent: python bin/harness check --agent codex --runtime
-```
-
-Runtime checks use the local Codex CLI's `hooks/list` API. They report new, modified, disabled or
-missing hooks and exit with status 1 when readiness cannot be verified. They do not start model
-turns, execute hooks or change trust. Review the exact installed hooks in Codex's Settings > Hooks
-or `/hooks`; installing them never grants trust automatically. An older CLI without this API
-is reported as unverified.
-
-If this PC has compressed Codex transcripts, runtime checks also require Python 3.14 or newer
-for the hook interpreter. The MCP checks validate registration and executable availability;
-they do not authenticate to remote MCP servers or test Engram cloud replication.
-
 ```bash
 git pull && bin/harness install && bin/harness check
 ```
@@ -147,6 +114,23 @@ In Windows PowerShell:
 ```powershell
 git pull; if ($?) { py -3 bin/harness install }; if ($?) { py -3 bin/harness check }
 ```
+
+## Codex only
+
+To manage only Codex, add `--agent codex` to `install`, `check`, and `doctor` (on Windows, `py -3 bin/harness`):
+
+```bash
+bin/harness install --agent codex --dry-run
+bin/harness install --agent codex
+bin/harness check --agent codex
+bin/harness doctor --agent codex   # same as: bin/harness check --agent codex --runtime
+```
+
+This mode installs self-contained hooks under `~/.codex/hooks`, Codex instructions and subagents, and the harness skills under `~/.agents/skills`. It preserves other agents' files and third-party skills. Replaced Codex files use the same timestamped backups described below. When `engram` or `codegraph` is on PATH, this mode also registers missing local MCP servers. Existing server entries, including remote or disabled ones, are preserved. Engram receives `ENGRAM_CLOUD_TOKEN` by environment-variable name; its value is never written to the config.
+
+`check --agent codex` verifies files, config, and hook selftests. `doctor --agent codex` also checks effective hook activation and integration prerequisites through the local Codex CLI's `hooks/list` API. It reports new, modified, disabled, or missing hooks and exits with status 1 when readiness cannot be verified. It does not start model turns, execute hooks, or change trust. Review the exact installed hooks in Codex's Settings > Hooks or `/hooks`; installing them never grants trust automatically. An older CLI without this API is reported as unverified.
+
+If this PC has compressed Codex transcripts, runtime checks also require Python 3.14 or newer for the hook interpreter. The MCP checks validate registration and executable availability; they do not authenticate to remote MCP servers or test Engram cloud replication.
 
 ## Backups and rollback
 

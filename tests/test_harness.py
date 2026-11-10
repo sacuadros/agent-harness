@@ -306,6 +306,38 @@ class Selection(unittest.TestCase):
             with mock.patch('builtins.input', lambda prompt: answer), mock.patch('builtins.print'):
                 self.assertEqual(tool.pick_text(names, {'claude', 'pi'}, []), expected, answer)
 
+    def test_text_picker_asks_again_for_unknown_answers(self):
+        # Names work like numbers; a typo or an out-of-range number asks again instead of installing nothing.
+        tool = load_harness()
+        names = ['claude', 'codex', 'pi']
+        for answers, expected in ((['codex, pi'], {'codex', 'pi'}), (['claude-code', '9', '2'], {'codex'})):
+            replies = iter(answers)
+            with mock.patch('builtins.input', lambda prompt: next(replies)), mock.patch('builtins.print') as shown:
+                self.assertEqual(tool.pick_text(names, {'claude'}, []), expected, answers)
+            self.assertEqual(sum('not an agent here' in str(call) for call in shown.call_args_list), len(answers) - 1)
+
+    @unittest.skipIf(load_harness().curses is None, 'needs curses')
+    def test_curses_picker_needs_one_agent_ticked(self):
+        tool = load_harness()
+        keys, frames = iter([ord(' '), 10, ord(' '), 10]), []  # untick, Enter (refused), tick, Enter
+
+        class Screen:
+            def erase(self):
+                frames.append([])
+
+            def addnstr(self, y, x, line, width):
+                frames[-1].append(line)
+
+            def getch(self):
+                return next(keys)
+        with mock.patch.object(tool.curses, 'wrapper', lambda loop: loop(Screen())), \
+                mock.patch.object(tool.curses, 'curs_set', lambda visibility: None), \
+                mock.patch.object(tool.curses, 'COLS', 80, create=True):
+            self.assertEqual(tool.pick_curses(['claude'], {'claude'}, []), {'claude'})
+        self.assertIn('Tick at least one agent', '\n'.join(frames[2]))
+        self.assertIn('Unticked agents keep their files', '\n'.join(frames[0]))
+        self.assertIn('~/.claude', '\n'.join(frames[0]))
+
     @unittest.skipIf(os.name == 'nt', 'needs curses and a pty')
     def test_first_install_in_a_terminal_opens_the_picker(self):
         import pty
