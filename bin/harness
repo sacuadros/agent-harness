@@ -23,6 +23,8 @@ import shlex
 import shutil
 import subprocess
 import threading
+import http.client
+import urllib.request
 from datetime import datetime
 import tomllib
 from pathlib import Path
@@ -836,6 +838,9 @@ def installed_skill_names(home):
     return names | BUILTIN_SKILLS
 
 
+ENGRAM_RELEASE = 'https://api.github.com/repos/Gentleman-Programming/engram/releases/latest'
+
+
 def engram_versions(home):
     claude = codex = None
     installed = home / '.claude/plugins/installed_plugins.json'
@@ -848,12 +853,12 @@ def engram_versions(home):
     if shutil.which('engram'):
         out = subprocess.run(['engram', 'version'], capture_output=True, encoding='utf-8', errors='replace', timeout=30)
         binary = (re.search(r'engram v?(\d\S*)', out.stdout) or [None, None])[1]
-    if binary and shutil.which('brew'):  # engram prints its own update notice only to a terminal
-        out = subprocess.run(['brew', 'info', '--json=v2', 'engram'], capture_output=True, encoding='utf-8', errors='replace', timeout=60)
+    if binary:  # engram prints its own update notice only to a terminal, and the brew tap can lag the release
         try:
-            stable = json.loads(out.stdout)['formulae'][0]['versions']['stable']
-            update = f'{binary} -> {stable}' if stable != binary else None
-        except (ValueError, KeyError, IndexError):
+            with urllib.request.urlopen(ENGRAM_RELEASE, timeout=5) as response:
+                latest = json.load(response)['tag_name'].lstrip('v')
+            update = f'{binary} -> {latest}' if latest != binary else None
+        except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, AttributeError):  # best effort
             pass
     return binary, claude, codex, update
 
@@ -1082,9 +1087,19 @@ def doctor(home, agent=None):
                                  timeout=30).stdout
         except (OSError, subprocess.SubprocessError):
             out = ''
-        if (found := re.match(r'\s*(\d+)\.(\d+)\.(\d+)', out)) and tuple(map(int, found.groups())) < (2, 1, 295):
-            findings.append(f'claude code {".".join(found.groups())} ignores onFailure, so a guard that cannot '
-                            'start lets the action through (claude update)')
+        if (found := re.match(r'\s*(\d+)\.(\d+)\.(\d+)', out)) and tuple(map(int, found.groups())) < (2, 1, 319):
+            findings.append(f'claude code {".".join(found.groups())} can let actions past the guards: before 2.1.319 '
+                            'an env-prefixed Bash command could bypass permissions and a new worktree could escape the '
+                            'sandbox; older versions also skip Bash hooks for Monitor or let a failing guard through '
+                            '(claude update)')
+    if 'opencode' in agents and (command := cli_argv('opencode', '--version')):
+        try:
+            out = subprocess.run(command, capture_output=True, encoding='utf-8', errors='replace', timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ''
+        if (found := re.search(r'(?m)^\s*(?:opencode\s+)?v?((\d+)\.\S+)', out)) and int(found[2]) >= 2:
+            findings.append(f'opencode {found[1]} runs without the harness guards: OpenCode 2 does not load '
+                            'V1 plugins (stay on OpenCode 1.x until the plugin is ported to V2)')
     codex = home / CODEX_CONFIG
     try:
         exposed = 'codex' in agents and codex.is_file() and 'engram' in tomllib.loads(codex.read_text(encoding='utf-8')).get('mcp_servers', {}) \
@@ -1105,6 +1120,13 @@ def doctor(home, agent=None):
                         'then `codegraph index` in each indexed repo)')
     if update:
         findings.append(f'engram update available: {update} (brew upgrade engram)')
+    pi = home / PI_SETTINGS  # Engram 3.7.0 pairs with gentle-engram 0.7.0; Pi keeps the version setup pinned
+    if 'pi' in agents and binary and pi.is_file() and (found := re.match(r'(\d+)\.(\d+)', binary)) \
+            and tuple(map(int, found.groups())) >= (3, 7) \
+            and (pinned := re.search(r'npm:gentle-engram@((\d+)\.(\d+)\S*?)"', pi.read_text(encoding='utf-8'))) \
+            and (int(pinned[2]), int(pinned[3])) < (0, 7):
+        findings.append(f'Pi pins gentle-engram@{pinned[1]}, older than Engram {binary} expects '
+                        '(engram setup pi, then restart Pi)')
     if engram := shutil.which('engram'):  # the status names where the token came from, never its value
         try:
             status = subprocess.run([engram, 'cloud', 'status'], capture_output=True, encoding='utf-8',

@@ -19,7 +19,7 @@ Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` 
 ## What the harness enforces
 
 - **Slice Flow** instead of upfront specs: a backlog of one-line vertical slices, refined just in time (`story`) and built test by test (`pair`). You approve the backlog once; the agent builds every slice on its own and stops only for open requirements or decisions, alarms, or approvals. Commits and pushes always wait for you. Say "pair" or "con pausas" to slow it down.
-- **Guards** shared by every agent (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution, approval for push/SSH/PR/publish/deploy, no reads of credential files or Keychain secrets, no CodeGraph lifecycle commands, and a backup before editing global agent config. The same rules cover MCP tools that run commands (such as Desktop Commander). A guard that errors or cannot start blocks the action instead of allowing it; Claude Code needs 2.1.295 or newer for the second part.
+- **Guards** shared by every agent (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution, approval for push/SSH/PR/publish/deploy, no reads of credential files or Keychain secrets, no CodeGraph lifecycle commands, and a backup before editing global agent config. The same rules cover MCP tools that run commands (such as Desktop Commander). A guard that errors or cannot start blocks the action instead of allowing it; Claude Code needs 2.1.319 or newer: older versions let a failing guard through or have known permission and sandbox bypasses.
 - **Least privilege by configuration:** Claude subagents cannot spawn their own (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), Copilot subagents get an explicit `tools:` list without `agent`, and Codex shell commands do not inherit `ENGRAM_CLOUD_TOKEN`, which only its Engram MCP receives.
 - **Memory and code-graph discipline** in Claude Code and Codex (`core/hooks/enforce_memory_graph.py`): save Engram memory after substantive turns, and query CodeGraph before broad searches in indexed repos.
 - **Scope check** in Claude Code and Codex (`scope` mode of the same hook): a turn whose edits reach 5 files or 150 lines is asked once to compare them with the request. It reads Edit and Write input, so shell and subagent edits go unseen.
@@ -29,6 +29,7 @@ Every agent but Claude Code reads the skills from `~/.agents/skills`. `install` 
 
 - macOS, Linux, or Windows 10/11 (native, not WSL), Git, and Python 3.11 or newer. Python 3.14 adds the Codex compressed-transcript checks; on older versions the hook skips them.
 - On Windows the harness manages Claude Code, Codex, and GitHub Copilot; OpenCode and Pi are macOS and Linux for now.
+- OpenCode 1.x. OpenCode 2 does not run V1 plugins such as the harness one, so its guards do not run there; `bin/harness doctor` reports it.
 - The agents you use, already installed and signed in.
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) and [CodeGraph](https://github.com/colbymchenry/codegraph), which the rules expect.
 

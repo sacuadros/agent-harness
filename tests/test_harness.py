@@ -1,5 +1,7 @@
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import re
 import os
@@ -1173,14 +1175,53 @@ class Doctor(unittest.TestCase):
 
     @unittest.skipIf(os.name == 'nt', 'the fake claude is a shell script')
     def test_old_claude_code_lets_failing_guards_through(self):
-        # onFailure: "block" needs Claude Code 2.1.295; older versions ignore it and allow the action.
+        # 2.1.319 closes the last known guard bypasses (env-prefix Bash permissions, worktree sandbox escape).
         bin_dir = Path(tempfile.mkdtemp())
         fake = bin_dir / 'claude'
         fake.write_text('#!/bin/sh\necho "$VERSION (Claude Code)"\n', encoding='utf-8', newline='\n')
         fake.chmod(0o755)
         path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
-        self.assertIn('claude code 2.1.283 ignores onFailure', self.doctor(PATH=path, VERSION='2.1.283'))
-        self.assertNotIn('ignores onFailure', self.doctor(PATH=path, VERSION='2.1.310'))
+        self.assertIn('claude code 2.1.318 can let actions past the guards', self.doctor(PATH=path, VERSION='2.1.318'))
+        self.assertNotIn('past the guards', self.doctor(PATH=path, VERSION='2.1.319'))
+
+    @unittest.skipIf(os.name == 'nt', 'the fake opencode is a shell script')
+    def test_opencode_2_runs_without_the_guards(self):
+        # OpenCode 2 does not load V1 plugins, and a skipped plugin raises no error.
+        bin_dir = Path(tempfile.mkdtemp())
+        fake = bin_dir / 'opencode'
+        fake.write_text('#!/bin/sh\necho "$VERSION"\n', encoding='utf-8', newline='\n')
+        fake.chmod(0o755)
+        (self.home / '.config' / 'opencode').mkdir(parents=True)
+        path = os.pathsep.join([str(bin_dir), '/usr/bin', '/bin'])
+        self.assertIn('opencode 2.2.6 runs without the harness guards', self.doctor(PATH=path, VERSION='2.2.6'))
+        self.assertIn('opencode 2.0.0 runs without the harness guards', self.doctor(PATH=path, VERSION='opencode v2.0.0'))
+        self.assertNotIn('without the harness guards', self.doctor(PATH=path, VERSION='1.18.30'))
+
+    @unittest.skipIf(os.name == 'nt', 'the fake engram is a shell script')
+    def test_engram_update_comes_from_the_latest_release(self):
+        # The Homebrew tap can lag the release, so brew info hides the drift.
+        tool = load_harness()
+        bin_dir = Path(tempfile.mkdtemp())
+        (bin_dir / 'engram').write_text('#!/bin/sh\necho "engram $ENGRAM_V"\n', encoding='utf-8', newline='\n')
+        (bin_dir / 'engram').chmod(0o755)
+        settings = self.home / '.pi' / 'agent' / 'settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"packages": ["npm:gentle-engram@0.1.14"]}', encoding='utf-8')
+        release = lambda *args, **kwargs: io.BytesIO(b'{"tag_name": "v3.7.0"}')
+        which = lambda name: str(bin_dir / 'engram') if name == 'engram' else None
+
+        def doctor(version):
+            out = io.StringIO()
+            with mock.patch.object(tool.urllib.request, 'urlopen', release), mock.patch.object(tool.shutil, 'which', which), \
+                    mock.patch.dict(os.environ, ENGRAM_V=version, PATH=f'{bin_dir}{os.pathsep}/usr/bin:/bin'), contextlib.redirect_stdout(out):
+                tool.doctor(self.home)
+            return out.getvalue()
+        out = doctor('3.5.4')
+        self.assertIn('engram update available: 3.5.4 -> 3.7.0', out)
+        self.assertNotIn('engram setup pi', out)  # the old companion still matches the old binary
+        out = doctor('3.7.0')
+        self.assertNotIn('engram update available', out)
+        self.assertIn('Pi pins gentle-engram@0.1.14', out)
 
     @unittest.skipIf(os.name == 'nt', 'the fake codegraph and npm are shell scripts')
     def test_codegraph_update_asks_for_a_reindex(self):
