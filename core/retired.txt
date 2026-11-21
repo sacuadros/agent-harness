@@ -6,3 +6,14 @@ Library/Application Support/Code/User/prompts/codegraph.instructions.md
 .config/copilot/copilot-instructions.md
 # VS Code's Copilot migration copies the profile rules here; ~/.copilot/copilot-instructions.md already has them.
 .copilot/instructions/agent-harness.instructions.md
+# OpenCode and Pi: the harness installed these until it stopped managing both agents.
+.config/opencode/AGENTS.md
+.config/opencode/plugins/agent-harness.ts
+.config/opencode/agents/implementation-worker.md
+.config/opencode/agents/independent-reviewer.md
+.config/opencode/agents/test-runner.md
+.pi/agent/AGENTS.md
+.pi/agent/extensions/agent-harness.ts
+.pi/agent/agents/implementation-worker.md
+.pi/agent/agents/independent-reviewer.md
+.pi/agent/agents/test-runner.md

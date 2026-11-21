@@ -8,7 +8,7 @@ One source of rules, skills, subagents, and guard hooks for the coding agents I 
 | Codex | `~/.codex/AGENTS.md` | `~/.agents/skills` | `~/.codex/agents/*.toml` | `~/.codex/hooks.json` + execpolicy rules |
 | GitHub Copilot | `~/.copilot/copilot-instructions.md` and the VS Code prompts folder | reads `~/.agents/skills` | `~/.copilot/agents/*.agent.md` | `~/.copilot/hooks/agent-harness.json` |
 
-The first `install` in a terminal lists the agents it finds on this PC, by their own config or command, with the folder each one uses, and lets you pick at least one. It remembers the choice in `~/.agent-harness/agents`, and later `install`, `check`, and `doctor` runs follow it. To change it, run `bin/harness install --choose`, or skip the picker with `--agents claude,codex`. Dropping an agent leaves its files in place. Some files are shared: every agent's guards run from `~/.claude/hooks`, and every agent but Claude Code reads the skills in `~/.agents/skills`.
+The first `install` in a terminal lists the agents it finds on this PC, by their own config or command, with the folder each one uses, and lets you pick at least one. It remembers the choice in `~/.agent-harness/agents`, and later `install`, `check`, and `doctor` runs follow it. To change it, run `bin/harness install --choose`, or skip the picker with `--agents claude,codex`. Dropping an agent leaves its files in place; `bin/harness uninstall` removes them. Some files are shared: every agent's guards run from `~/.claude/hooks`, and every agent but Claude Code reads the skills in `~/.agents/skills`.
 
 With no terminal and no saved choice, `install` covers Claude Code, Codex, and Copilot when its config folder exists. On Windows the picker is a numbered prompt, because Python ships there without `curses`; it takes numbers or names (`claude,codex`) and asks again when an answer matches no agent.
 
@@ -110,6 +110,8 @@ In Windows PowerShell:
 git pull; if ($?) { py -3 bin/harness install }; if ($?) { py -3 bin/harness check }
 ```
 
+`install` also clears what a newer version stopped shipping. It records the files it wrote in `~/.agent-harness/installed.json` and moves the ones the repo no longer has to the backup folder; `check` reports them as stale until then. A PC without that record gets it on its first install, so the cleanup starts with the next change.
+
 ## Codex only
 
 To manage only Codex, add `--agent codex` to `install`, `check`, and `doctor` (on Windows, `py -3 bin/harness`):
@@ -131,10 +133,30 @@ If this PC has compressed Codex transcripts, runtime checks also require Python 
 
 Every file `install` replaces or retires is copied first to `~/.agent-harness/backups/<timestamp>/`, keeping its path under your home, with a `manifest.json` that also lists the files it created. To undo a whole install, run `bin/harness restore <timestamp>`. What that removes moves to a `<timestamp>-before-restore` folder. `~/.claude.json` and the Engram MCP entry are not restored, and backups from before the manifest are copied back by hand. After a restore that touches `~/.codex/hooks.json`, trust the hooks again in Codex with `/hooks`.
 
+## Uninstall
+
+```bash
+bin/harness uninstall --agents copilot --dry-run   # see what would go
+bin/harness uninstall --agents copilot             # take the harness off one agent
+bin/harness uninstall --agents claude,codex,copilot
+```
+
+It moves the agent's instructions, skills, and subagents to a backup folder, takes the harness hooks out of its config, and removes the Codex rules block and the environment variables the harness set. Hook scripts and skills another agent still uses stay until that agent goes too. Your permission rules, plugin switches, MCP servers, and the Engram token protection stay, because the harness cannot tell yours from its own. The agent leaves the saved choice, so a later `install` does not bring it back. To undo it, run the `restore` command it prints.
+
+## Clean up old backups
+
+```bash
+bin/harness clean                   # list what would be deleted
+bin/harness clean --yes             # delete it; this cannot be undone
+bin/harness clean --keep 10 --yes   # keep more than the default 5
+```
+
+`clean` keeps the 5 newest entries in `~/.agent-harness/backups/` and the 5 newest copies the guard made in `~/.claude/backups/`, and deletes the rest. It leaves the backups other tools keep.
+
 ## What is managed and what is left alone
 
 - **Managed:** the files in the table above; harness hook entries inside `settings.json` and `hooks.json`, which are merged in place so other entries keep their position; one marked block in `~/.codex/rules/default.rules`; and the plugin, permission, and token keys listed in `core/plugins.toml` and `core/permissions.toml`.
-- **Retired:** old copies listed in `core/retired.txt` are moved to the backup folder.
+- **Retired:** old copies listed in `core/retired.txt`, including what the harness installed for OpenCode and Pi before it dropped them, are moved to the backup folder.
 - **Left alone:** every other setting, plugin, MCP server, skill, and agent you have, including third-party skills such as HyperFrames.
 
 ## Where to edit

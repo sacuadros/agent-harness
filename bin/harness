@@ -4,7 +4,10 @@
   harness render <agent>              print the rendered instructions for one agent
   harness install [--home] [--dry-run] [--agents a,b | --choose]
                                       write changed files for the agents you pick, backing up what they replace
-  harness restore <stamp> [--home]    undo one install from its backup manifest
+  harness uninstall --agents a,b [--home] [--dry-run]
+                                      take the harness off those agents, backing up what it removes
+  harness restore <stamp> [--home]    undo one install or uninstall from its backup manifest
+  harness clean [--keep N] [--yes]    list the backups older than the newest N; delete them with --yes
   harness check [--home]              exit 1 if anything installed drifted or is broken
   harness doctor [--home]             report leftovers and version drift (read-only)
 """
@@ -387,6 +390,7 @@ def vscode_user(home):
 RULES = '.codex/rules/default.rules'
 RULES_BEGIN = '# >>> agent-harness: managed by bin/harness, edit core/hooks/codex.rules\n'
 RULES_END = '# <<< agent-harness\n'
+MERGED = {*CONFIGS, RULES}  # edited in place, so never recorded or removed as whole files
 
 
 def codex_rules(home):
@@ -423,6 +427,11 @@ def wanted(rel, agents):
     return bool(next(owners for prefix, owners in OWNERS if rel.startswith(prefix)) & agents)
 
 
+def dropped(rel):
+    """A path no supported agent owns: it belonged to an agent the harness stopped managing."""
+    return not any(rel.startswith(prefix) for prefix, _ in OWNERS)
+
+
 def choice_file(home):
     return home / '.agent-harness' / 'agents'
 
@@ -444,7 +453,33 @@ def retiring(home, agents=None):
     if agents is None and not saved_choice(home):
         return RETIRED
     chosen = selected(home) if agents is None else agents
-    return [rel for rel in RETIRED if wanted(rel, chosen)]
+    return [rel for rel in RETIRED if dropped(rel) or wanted(rel, chosen)]
+
+
+def record_file(home):
+    return home / '.agent-harness' / 'installed.json'
+
+
+def recorded(home):
+    """Whole files `install` wrote on this PC; empty until an install records them."""
+    try:
+        return {rel for rel in json.loads(record_file(home).read_text(encoding='utf-8')) if isinstance(rel, str)}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def write_record(home, rels):
+    record_file(home).parent.mkdir(parents=True, exist_ok=True)
+    record_file(home).write_text(json.dumps(sorted(rels), indent=2) + '\n', encoding='utf-8', newline='\n')
+
+
+def stale(home, files, agent=None, agents=None):
+    """Paths to clear: the retired copies, plus recorded files this version no longer installs."""
+    old = retiring(home, {agent} if agent else agents)
+    if agent:  # ponytail: Codex alone keeps its hooks elsewhere, so the record cannot tell what was dropped; a full install clears it
+        return old
+    chosen = selected(home) if agents is None else agents
+    return [*old, *sorted(rel for rel in recorded(home) - set(files) if dropped(rel) or wanted(rel, chosen))]
 
 
 def detected(home):
@@ -614,29 +649,48 @@ def backup_stamp():
     return datetime.now().strftime('%Y%m%d-%H%M%S-%f')  # microseconds: two runs can share a second
 
 
+def journal(backup_dir, manifest, kind, rel):
+    """Add one change to the backup's manifest, written as it goes so a failed run can still be restored."""
+    manifest[kind].append(rel)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    (backup_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+
+
+def set_aside(home, rel, backup_dir):
+    """Move one path to the backup folder and drop the folders it leaves empty."""
+    old = home / rel
+    (backup_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(old), str(backup_dir / rel))
+    folder = old.parent
+    try:  # a link stays: it is the user's, and removing it would not empty anything
+        while folder.parent != home and not folder.is_symlink() and not any(folder.iterdir()):
+            folder.rmdir()
+            folder = folder.parent
+    except OSError:
+        pass  # tidying is best effort; the file is already in the backup
+
+
 def install(home, dry_run=False, agent=None, agents=None):
     changed = False
     chosen = {agent} if agent else selected(home) if agents is None else agents
     backup_dir = home / '.agent-harness' / 'backups' / backup_stamp()
     manifest = {'created': [], 'replaced': [], 'retired': []}
 
-    def record(kind, rel):  # written as it goes, so a failed install can still be restored
-        manifest[kind].append(rel)
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        (backup_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    def record(kind, rel):
+        journal(backup_dir, manifest, kind, rel)
 
-    for rel in retiring(home, {agent} if agent else agents):
-        stale = home / rel
-        if stale.exists():
+    files = outputs(home, agent, agents)
+    for rel in stale(home, files, agent, agents):
+        old = home / rel
+        if old.exists():
             changed = True
             if dry_run:
-                print(f'would retire {stale}')
+                print(f'would retire {old}')
                 continue
-            (backup_dir / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(stale), str(backup_dir / rel))
+            set_aside(home, rel, backup_dir)
             record('retired', rel)
-            print(f'retired {stale} -> {backup_dir / rel}')
-    for rel, content in outputs(home, agent, agents).items():
+            print(f'retired {old} -> {backup_dir / rel}')
+    for rel, content in files.items():
         target = home / rel
         if target.is_file() and target.read_bytes() == content:
             continue
@@ -681,8 +735,99 @@ def install(home, dry_run=False, agent=None, agents=None):
     if agents is not None and not dry_run:
         choice_file(home).parent.mkdir(parents=True, exist_ok=True)
         choice_file(home).write_text('\n'.join(sorted(agents)) + '\n', encoding='utf-8', newline='\n')
+    if not dry_run:
+        whole = {rel for rel in (recorded(home) | set(files)) - MERGED if os.path.lexists(home / rel)}
+        if whole != recorded(home):
+            write_record(home, whole)
     if not changed:
         print('no changes')
+
+
+def installed_agents(home):
+    """Agents whose instructions on this PC are the harness's, chosen or not."""
+    found = set()
+    for name, spec in AGENTS.items():
+        try:
+            text = (home / spec['path']).read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        if f'<!-- {spec["marker"]}:' in text:
+            found.add(name)
+    return found
+
+
+def uninstall(home, agents, dry_run=False):
+    """Take the harness off these agents. What goes moves to a backup folder that `restore` undoes."""
+    staying = installed_agents(home) - agents  # they still run the shared hooks and read the shared skills
+    ours = agents & installed_agents(home)  # an agent the harness never installed keeps every file it has
+    whole = sorted(rel for rel in (set(outputs(home, agents=ours)) | recorded(home)) - MERGED
+                   if not dropped(rel) and wanted(rel, agents) and not wanted(rel, staying)
+                   and os.path.lexists(home / rel))
+    edits = {}
+    for agent in sorted(agents & set(HOOK_CONFIGS)):
+        try:
+            data = json.loads((home / HOOK_CONFIGS[agent]).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue  # missing or unparseable: nothing to take out safely
+        before = json.dumps(data)
+        if 'hooks' in data:
+            data['hooks'] = {event: kept for event, entries in data['hooks'].items()
+                             if (kept := [entry for entry in entries if hook_key(entry) is None])}
+        if agent == 'claude' and isinstance(data.get('env'), dict):
+            for key in ('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH', *ENGRAM_CLOUD_KEYS):
+                data['env'].pop(key, None)
+        if json.dumps(data) != before:
+            edits[HOOK_CONFIGS[agent]] = (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
+    if 'codex' in agents:
+        rules = (home / RULES).read_text(encoding='utf-8') if (home / RULES).is_file() else ''
+        if RULES_BEGIN in rules and RULES_END in rules:
+            head, rest = rules.split(RULES_BEGIN, 1)
+            edits[RULES] = (head + rest.split(RULES_END, 1)[1]).encode()
+        try:
+            config = cleared = (home / CODEX_CONFIG).read_text(encoding='utf-8')
+            for key in ENGRAM_CLOUD_KEYS:
+                cleared = table_value(cleared, ('mcp_servers', 'engram', 'env'), key, None)
+            if cleared != config:
+                edits[CODEX_CONFIG] = cleared.encode()
+        except (OSError, ValueError):
+            pass  # missing or unparseable: nothing to take out safely
+    if not whole and not edits:
+        print('nothing to uninstall')
+        return
+    if dry_run:
+        for rel in whole:
+            print(f'would remove {home / rel}')
+        for rel in edits:
+            print(f'would take the harness entries out of {home / rel}')
+        return
+    backup_dir = home / '.agent-harness' / 'backups' / backup_stamp()
+    manifest = {'created': [], 'replaced': [], 'retired': []}
+
+    def keep(rel):  # copied before it changes, so `restore` puts it back
+        if (home / rel).is_file():
+            (backup_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(home / rel, backup_dir / rel)
+            journal(backup_dir, manifest, 'replaced', rel)
+        else:
+            journal(backup_dir, manifest, 'created', rel)
+
+    for rel, content in edits.items():  # configs first: a hook entry must never outlive its script
+        keep(rel)
+        (home / rel).write_bytes(content)
+        print(f'took the harness entries out of {home / rel}')
+    for rel in whole:
+        set_aside(home, rel, backup_dir)
+        journal(backup_dir, manifest, 'retired', rel)
+        print(f'removed {home / rel} -> {backup_dir / rel}')
+    for path in (choice_file(home), record_file(home)):
+        keep(path.relative_to(home).as_posix())
+    if remaining := sorted(selected(home) - agents):  # a later `install` must not bring them back
+        choice_file(home).parent.mkdir(parents=True, exist_ok=True)
+        choice_file(home).write_text('\n'.join(remaining) + '\n', encoding='utf-8', newline='\n')
+    else:
+        choice_file(home).unlink(missing_ok=True)
+    write_record(home, recorded(home) - set(whole))
+    print(f'kept your permission rules, plugin switches, and MCP servers; undo with: harness restore {backup_dir.name}')
 
 
 def restore(home, stamp):
@@ -724,6 +869,26 @@ def restore(home, stamp):
     return 0
 
 
+GUARD_COPY = re.compile(r'.+__.+\.[\w-]+\.\d{8}-\d{6}$')  # harness_guards.py `backup`: <root>__<path>.<session>.<stamp>
+
+
+def clean(home, keep=5, yes=False):
+    """Delete all but the newest backups: install backups, and the guard's copies of global config."""
+    installs, copies = home / '.agent-harness' / 'backups', home / '.claude' / 'backups'
+    groups = (list(installs.iterdir()) if installs.is_dir() else [],
+              [path for path in copies.iterdir() if GUARD_COPY.match(path.name)] if copies.is_dir() else [])
+    old = [path for group in groups
+           for path in sorted(group, key=lambda path: (path.lstat().st_mtime, path.name), reverse=True)[keep:]]
+    for path in old:
+        if yes:  # a link goes as a link, never the folder it points to
+            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+        print(f'{"deleted" if yes else "would delete"} {path}')
+    if not old:
+        print('nothing to clean')
+    elif not yes:
+        print(f'{len(old)} to delete, for good; run again with --yes')
+
+
 SECRET_NAME = re.compile(r'token|secret|password|api_?key', re.I)
 NOT_SECRET = re.compile(r'tokens$|_env_var$', re.I)  # token counts, names of env vars
 
@@ -740,11 +905,12 @@ def literal_secrets(data, prefix=''):
 
 def check(home, agent=None, runtime=False):
     problems = []
-    for rel, content in outputs(home, agent).items():
+    files = outputs(home, agent)
+    for rel, content in files.items():
         target = home / rel
         if not target.is_file() or target.read_bytes() != content:
             problems.append(f'drift: {target}')
-    problems += [f'stale: {home / rel}' for rel in retiring(home, {agent} if agent else None) if (home / rel).exists()]
+    problems += [f'stale: {home / rel}' for rel in stale(home, files, agent) if (home / rel).exists()]
     agents = {agent} if agent else selected(home)
     selftested = [rel.replace('.claude/', '.codex/') for rel in SELFTESTED] if agent else SELFTESTED
     for rel in selftested:
@@ -1090,6 +1256,14 @@ def main(argv=None):
     pick.add_argument('--agent', choices=['codex'], help='Codex alone, with its own hook copies')
     pick.add_argument('--agents', help=f'comma-separated: {",".join(AGENTS)}')
     pick.add_argument('--choose', action='store_true', help='pick the agents again')
+    gone = sub.add_parser('uninstall')
+    gone.add_argument('--home', type=Path, default=Path.home())
+    gone.add_argument('--agents', required=True, help=f'comma-separated: {",".join(AGENTS)}')
+    gone.add_argument('--dry-run', action='store_true')
+    tidy = sub.add_parser('clean')
+    tidy.add_argument('--home', type=Path, default=Path.home())
+    tidy.add_argument('--keep', type=int, default=5, help='backups to keep in each place (default 5)')
+    tidy.add_argument('--yes', action='store_true', help='delete; without it, only list')
     back = sub.add_parser('restore')
     back.add_argument('stamp')
     back.add_argument('--home', type=Path, default=Path.home())
@@ -1105,6 +1279,8 @@ def main(argv=None):
         args.home = Path(os.path.abspath(args.home))
     if getattr(args, 'runtime', False) and args.agent != 'codex':
         parser.error('--runtime requires --agent codex')
+    if getattr(args, 'keep', 0) < 0:
+        parser.error('--keep takes 0 or more')
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding='utf-8', newline='\n')  # Windows: cp1252 and CRLF by default
     if args.command == 'render':
@@ -1122,6 +1298,14 @@ def main(argv=None):
                 print('nothing selected, nothing installed')
                 return 0
         install(args.home, args.dry_run, args.agent, agents)
+    elif args.command == 'uninstall':
+        agents = set(args.agents.split(','))
+        if unknown := sorted(agents - set(AGENTS)):
+            print(f'not an agent: {", ".join(unknown)}; choose from {", ".join(AGENTS)}')
+            return 1
+        uninstall(args.home, agents, args.dry_run)
+    elif args.command == 'clean':
+        clean(args.home, args.keep, args.yes)
     elif args.command == 'restore':
         return restore(args.home, args.stamp)
     elif args.command == 'check':

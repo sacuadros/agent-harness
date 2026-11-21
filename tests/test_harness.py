@@ -278,8 +278,10 @@ class Selection(unittest.TestCase):
 
     def test_every_managed_path_has_an_owner(self):
         tool = load_harness()
-        for rel in [*tool.outputs(self.home, agents=set(tool.AGENTS)), *tool.RETIRED]:
+        for rel in tool.outputs(self.home, agents=set(tool.AGENTS)):
             self.assertTrue(tool.wanted(rel, set(tool.AGENTS)), rel)
+        for rel in tool.RETIRED:  # a retired copy may belong to an agent the harness dropped
+            self.assertTrue(tool.dropped(rel) or tool.wanted(rel, set(tool.AGENTS)), rel)
 
     def test_detects_a_config_folder_or_a_command(self):
         tool = load_harness()
@@ -1360,6 +1362,190 @@ class Check(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(settings), result.stdout)
         self.assertIn(str(config), result.stdout)
+
+
+class Reconcile(unittest.TestCase):
+    """`install` also clears what an earlier version installed and this one no longer ships."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        (self.home / '.claude.json').write_text('{}\n', encoding='utf-8')
+        self.record = self.home / '.agent-harness' / 'installed.json'
+
+    def install(self):
+        return harness('install', '--home', str(self.home), '--agents', 'claude')
+
+    def test_install_clears_a_file_this_version_no_longer_ships(self):
+        self.install()
+        dropped = self.home / '.claude' / 'skills' / 'old-skill' / 'SKILL.md'  # an earlier version shipped it
+        mine = self.home / '.claude' / 'skills' / 'my-skill' / 'SKILL.md'  # third-party: never recorded
+        for path in (dropped, mine):
+            path.parent.mkdir(parents=True)
+            path.write_text('x\n', encoding='utf-8')
+        self.record.write_text(json.dumps([*json.loads(self.record.read_text(encoding='utf-8')),
+                                           '.claude/skills/old-skill/SKILL.md']), encoding='utf-8')
+        result = run('check', '--home', str(self.home))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'stale: {dropped}', result.stdout)
+        self.install()
+        self.assertFalse(dropped.parent.exists())
+        self.assertTrue(mine.is_file())
+        moved = list((self.home / '.agent-harness' / 'backups').glob('*/.claude/skills/old-skill/SKILL.md'))
+        self.assertEqual(len(moved), 1)
+        self.assertNotIn('.claude/skills/old-skill/SKILL.md', json.loads(self.record.read_text(encoding='utf-8')))
+        self.assertEqual(run('check', '--home', str(self.home)).returncode, 0)
+
+    def test_the_record_lists_whole_files_and_no_merged_config(self):
+        self.install()
+        record = json.loads(self.record.read_text(encoding='utf-8'))
+        self.assertIn('.claude/CLAUDE.md', record)
+        self.assertIn('.claude/hooks/harness_guards.py', record)
+        self.assertNotIn('.claude/settings.json', record)
+
+    def test_install_clears_what_the_harness_left_for_agents_it_dropped(self):
+        left = [self.home / '.config' / 'opencode' / 'AGENTS.md',
+                self.home / '.pi' / 'agent' / 'extensions' / 'agent-harness.ts']
+        own = self.home / '.config' / 'opencode' / 'opencode.json'
+        for path in (*left, own):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('x\n', encoding='utf-8')
+        self.install()  # a saved choice does not protect what belonged to a dropped agent
+        self.assertEqual([path.exists() for path in (*left, own)], [False, False, True])
+        self.assertEqual(len(list((self.home / '.agent-harness' / 'backups').glob('*/.config/opencode/AGENTS.md'))), 1)
+
+
+class Uninstall(unittest.TestCase):
+    """`uninstall` takes the harness off the agents you name and leaves the rest working."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        (self.home / '.claude.json').write_text('{}\n', encoding='utf-8')
+        (self.home / '.codex').mkdir()
+        self.settings = self.home / '.claude' / 'settings.json'
+        self.settings.parent.mkdir()
+        self.own_hook = {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'my-own-hook'}]}
+        self.settings.write_text(json.dumps({'hooks': {'PreToolUse': [self.own_hook]}}), encoding='utf-8')
+        harness('install', '--home', str(self.home), '--agents', 'claude,codex')
+
+    def uninstall(self, *args):
+        return harness('uninstall', '--home', str(self.home), *args)
+
+    def exists(self, *paths):
+        return [(self.home / path).exists() for path in paths]
+
+    def test_takes_one_agent_off_and_keeps_what_the_other_uses(self):
+        gone = ('.claude/CLAUDE.md', '.claude/skills/pair/SKILL.md', '.claude/agents/test-runner.md')
+        self.assertIn('CLAUDE.md', self.uninstall('--agents', 'claude', '--dry-run'))
+        self.assertEqual(self.exists(*gone), [True] * 3)
+        self.uninstall('--agents', 'claude')
+        self.assertEqual(self.exists(*gone, '.claude/skills'), [False] * 4)
+        self.assertEqual(self.exists('.claude/hooks/harness_guards.py', '.codex/AGENTS.md',
+                                     '.agents/skills/pair/SKILL.md'), [True] * 3)
+        settings = json.loads(self.settings.read_text(encoding='utf-8'))
+        self.assertEqual(settings['hooks'], {'PreToolUse': [self.own_hook]})
+        rules = tomllib.loads((REPO / 'core' / 'permissions.toml').read_text(encoding='utf-8'))['claude']['deny']
+        self.assertEqual(settings['permissions']['deny'], rules)
+        self.assertEqual((self.home / '.agent-harness' / 'agents').read_text(encoding='utf-8').split(), ['codex'])
+        result = run('check', '--home', str(self.home))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'), result.stdout)
+
+    def test_taking_the_last_agent_off_clears_shared_files_and_restore_brings_them_back(self):
+        third_party = self.home / '.agents' / 'skills' / 'my-skill' / 'SKILL.md'
+        third_party.parent.mkdir(parents=True)
+        third_party.write_text('mine\n', encoding='utf-8')
+        self.uninstall('--agents', 'claude,codex')
+        shared = ('.claude/hooks/harness_guards.py', '.agents/skills/pair/SKILL.md', '.codex/AGENTS.md')
+        self.assertEqual(self.exists(*shared), [False] * 3)
+        self.assertTrue(third_party.is_file())
+        self.assertNotIn('harness_guards', (self.home / '.codex' / 'hooks.json').read_text(encoding='utf-8'))
+        self.assertFalse((self.home / '.agent-harness' / 'agents').exists())
+        stamp = max(p.parent.name for p in (self.home / '.agent-harness' / 'backups').glob('*/manifest.json'))
+        harness('restore', stamp, '--home', str(self.home))
+        self.assertEqual(self.exists(*shared), [True] * 3)
+        self.assertIn('harness_guards', (self.home / '.codex' / 'hooks.json').read_text(encoding='utf-8'))
+
+    def test_takes_out_the_rules_and_environment_the_harness_set(self):
+        (self.home / '.agent-harness' / 'config.toml').write_text('engram_cloud_server = "https://engram.test"\n', encoding='utf-8')
+        config = self.home / '.codex' / 'config.toml'
+        config.write_text('[mcp_servers.engram]\ncommand = "engram"\n', encoding='utf-8')
+        rules = self.home / '.codex' / 'rules' / 'default.rules'
+        own_rule = 'prefix_rule(pattern=["rm"], decision="prompt")\n'
+        rules.write_text(own_rule + rules.read_text(encoding='utf-8'), encoding='utf-8')
+        settings = json.loads(self.settings.read_text(encoding='utf-8'))
+        settings['env']['MY_VAR'] = 'mine'
+        self.settings.write_text(json.dumps(settings), encoding='utf-8')
+        harness('install', '--home', str(self.home))
+        self.assertIn('ENGRAM_CLOUD_SERVER', self.settings.read_text(encoding='utf-8') + config.read_text(encoding='utf-8'))
+        self.uninstall('--agents', 'claude,codex')
+        self.assertEqual(json.loads(self.settings.read_text(encoding='utf-8'))['env'], {'MY_VAR': 'mine'})
+        self.assertEqual(rules.read_text(encoding='utf-8'), own_rule)
+        engram = tomllib.loads(config.read_text(encoding='utf-8'))['mcp_servers']['engram']
+        self.assertEqual((engram['command'], engram['env_vars'], engram.get('env', {})), ('engram', ['ENGRAM_CLOUD_TOKEN'], {}))
+
+    @unittest.skipIf(os.name == 'nt', 'symlinks need a privilege on Windows')
+    def test_a_symlinked_skills_folder_survives_and_the_hooks_still_go(self):
+        home = Path(tempfile.mkdtemp())
+        (home / '.claude.json').write_text('{}\n', encoding='utf-8')
+        (home / 'dotfiles' / 'skills').mkdir(parents=True)
+        (home / '.claude').mkdir()
+        (home / '.claude' / 'skills').symlink_to(home / 'dotfiles' / 'skills')
+        harness('install', '--home', str(home), '--agents', 'claude')
+        harness('uninstall', '--home', str(home), '--agents', 'claude')
+        self.assertTrue((home / '.claude' / 'skills').is_symlink())
+        self.assertNotIn('harness_guards', (home / '.claude' / 'settings.json').read_text(encoding='utf-8'))
+        self.assertFalse((home / '.claude' / 'hooks').exists())
+
+    def test_leaves_the_files_of_an_agent_the_harness_never_installed(self):
+        home = Path(tempfile.mkdtemp())
+        (home / '.claude.json').write_text('{}\n', encoding='utf-8')
+        own = [home / '.codex' / 'AGENTS.md', home / '.agents' / 'skills' / 'backlog' / 'SKILL.md']
+        for path in own:
+            path.parent.mkdir(parents=True)
+            path.write_text('mine\n', encoding='utf-8')
+        harness('install', '--home', str(home), '--agents', 'claude')
+        harness('uninstall', '--home', str(home), '--agents', 'codex')
+        self.assertEqual([path.read_text(encoding='utf-8') for path in own], ['mine\n', 'mine\n'])
+
+    def test_restore_brings_back_the_choice_and_the_record(self):
+        kept = [self.home / '.agent-harness' / 'agents', self.home / '.agent-harness' / 'installed.json']
+        before = [path.read_text(encoding='utf-8') for path in kept]
+        self.uninstall('--agents', 'claude')
+        stamp = max(p.parent.name for p in (self.home / '.agent-harness' / 'backups').glob('*/manifest.json'))
+        harness('restore', stamp, '--home', str(self.home))
+        self.assertEqual([path.read_text(encoding='utf-8') for path in kept], before)
+
+
+class Clean(unittest.TestCase):
+    """`clean` deletes old harness backups for good, and only when told to."""
+
+    def test_lists_first_and_deletes_only_with_yes_keeping_the_newest(self):
+        home = Path(tempfile.mkdtemp())
+        installs, copies = home / '.agent-harness' / 'backups', home / '.claude' / 'backups'
+        names = {installs: [f'2026010{day}-000000-000000' for day in range(1, 8)],
+                 copies: [f'claude__CLAUDE.md.abcd1234.2026010{day}-000000' for day in range(1, 8)]}
+        for folder, entries in names.items():
+            folder.mkdir(parents=True)
+            for age, name in enumerate(entries):
+                if folder == installs:
+                    (folder / name).mkdir()
+                    (folder / name / 'manifest.json').write_text('{}', encoding='utf-8')
+                else:
+                    (folder / name).write_text('x', encoding='utf-8')
+                os.utime(folder / name, (1_700_000_000 + age, 1_700_000_000 + age))
+        foreign = copies / '.claude.json.backup.1795271369063'  # Claude Code's own backup, and the oldest file there
+        foreign.write_text('{}', encoding='utf-8')
+        os.utime(foreign, (1, 1))
+        left = lambda folder: sorted(entry.name for entry in folder.iterdir())
+
+        listed = harness('clean', '--home', str(home))
+        self.assertIn(str(installs / names[installs][0]), listed)
+        self.assertNotIn(str(installs / names[installs][2]), listed)
+        self.assertEqual(len(left(installs)), 7)
+        harness('clean', '--home', str(home), '--yes')
+        self.assertEqual(left(installs), names[installs][2:])
+        self.assertEqual(left(copies), [foreign.name, *names[copies][2:]])
+        harness('clean', '--home', str(home), '--yes', '--keep', '1')
+        self.assertEqual(left(installs), names[installs][-1:])
 
 
 if __name__ == '__main__':
