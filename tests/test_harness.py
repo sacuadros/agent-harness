@@ -1390,7 +1390,9 @@ class Secrets(unittest.TestCase):
             'allow': ['Bash(npm run build)'], 'deny': ['Read(./secret.txt)']}}), encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
         permissions = json.loads(settings.read_text(encoding='utf-8'))['permissions']
-        self.assertEqual(permissions['allow'], ['Bash(npm run build)'])
+        self.assertEqual(permissions['allow'][0], 'Bash(npm run build)')
+        self.assertIn('mcp__engram__mem_save', permissions['allow'])
+        self.assertEqual(len(permissions['allow']), len(set(permissions['allow'])))
         self.assertEqual(permissions['deny'][0], 'Read(./secret.txt)')
         self.assertIn('Read(~/.aws/**)', permissions['deny'])
         self.assertIn('Read(**/.env)', permissions['ask'])

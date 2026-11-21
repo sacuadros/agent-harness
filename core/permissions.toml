@@ -10,6 +10,18 @@ deny = [
   "Edit(~/.ssh/**)", "Edit(~/.aws/**)", "Edit(~/.gnupg/**)", "Edit(~/.netrc)",
 ]
 ask = ["Read(**/.env)", "Read(**/.env.*)"]
+# Engram's PreToolUse hook rewrites session_id, and auto mode rejects calls a hook modified
+# after review. Writes only: mem_delete and mem_merge_projects still go through review.
+allow = [
+  "mcp__engram__mem_save", "mcp__engram__mem_update", "mcp__engram__mem_session_summary",
+  "mcp__engram__mem_save_prompt", "mcp__engram__mem_session_start", "mcp__engram__mem_session_end",
+  "mcp__engram__mem_judge", "mcp__engram__mem_compare", "mcp__engram__mem_capture_passive",
+  "mcp__plugin_engram_engram__mem_save", "mcp__plugin_engram_engram__mem_update",
+  "mcp__plugin_engram_engram__mem_session_summary", "mcp__plugin_engram_engram__mem_save_prompt",
+  "mcp__plugin_engram_engram__mem_session_start", "mcp__plugin_engram_engram__mem_session_end",
+  "mcp__plugin_engram_engram__mem_judge", "mcp__plugin_engram_engram__mem_compare",
+  "mcp__plugin_engram_engram__mem_capture_passive",
+]
 
 [codex]
 # Secrets that must come from the environment (Keychain via a LaunchAgent), never from config.toml.

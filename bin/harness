@@ -247,7 +247,7 @@ def hook_config(agent, home, standalone=False):
                 data.get('env', {}).pop(key, None)
         data.setdefault('enabledPlugins', {}).update(PLUGINS['claude'])
         permissions = data.setdefault('permissions', {})
-        for kind in ('deny', 'ask'):
+        for kind in ('allow', 'deny', 'ask'):
             rules = permissions.setdefault(kind, [])
             rules += [rule for rule in PERMISSIONS['claude'][kind] if rule not in rules]
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
