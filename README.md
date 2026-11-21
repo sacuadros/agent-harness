@@ -18,7 +18,7 @@ With no terminal and no saved choice, `install` covers Claude Code, Codex, and C
 - **Guards** shared by every agent (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution, approval for push/SSH/PR/publish/deploy, no reads of credential files or Keychain secrets, no CodeGraph lifecycle commands, and a backup before editing global agent config. The same rules cover MCP tools that run commands (such as Desktop Commander). A guard that errors or cannot start blocks the action instead of allowing it; Claude Code needs 2.1.319 or newer: older versions let a failing guard through or have known permission and sandbox bypasses.
 - **Least privilege by configuration:** Claude subagents cannot spawn their own (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), Copilot subagents get an explicit `tools:` list without `agent`, and Codex shell commands do not inherit `ENGRAM_CLOUD_TOKEN`, which only its Engram MCP receives.
 - **Memory and code-graph discipline** in Claude Code and Codex (`core/hooks/enforce_memory_graph.py`): save Engram memory after substantive turns, and query CodeGraph before broad searches in indexed repos.
-- **Scope check** in Claude Code and Codex (`scope` mode of the same hook): a turn whose edits reach 5 files or 150 lines is asked once to compare them with the request. It reads Edit and Write input, so shell and subagent edits go unseen.
+- **Evidence gate** in Claude Code, Codex, and Copilot (`evidence` mode of the same hook; Copilot is untested inside VS Code itself, where agent hooks are in preview): a turn that edited code and ran no command or subagent afterwards is asked once to run the focused check or say why none applies. It does not check that the command is a test, and shell edits go unseen. Why and how: [`docs/methodology.md`](docs/methodology.md).
 - **Delegation only for named reasons** (exploration, parallel writers, noisy checks, independent review, context backstop).
 
 ## Requirements
@@ -71,7 +71,7 @@ python = "/opt/homebrew/bin/python3"   # interpreter for the hooks; default: pyt
 engram_cloud_server = "https://engram.example.com"   # your Engram cloud server; omit to keep Engram local
 ```
 
-With `engram_cloud_server` set, `bin/harness install` gives Claude Code and Codex `ENGRAM_CLOUD_SERVER` and `ENGRAM_CLOUD_AUTOSYNC=1`; without it, install removes both. The token never goes in a file; set it as described below. `bin/harness doctor` prints the cloud status and reports a missing token.
+With `engram_cloud_server` set, `bin/harness install` gives Claude Code and Codex `ENGRAM_CLOUD_SERVER` and `ENGRAM_CLOUD_AUTOSYNC=1`, and installs the auto-enroll hook (`engram_auto_enroll.py`) that enrolls projects for sync. Without it, install removes the two variables, the hook entries, and the script. Engram and CodeGraph themselves stay required; only the cloud sync is optional. The token never goes in a file; set it as described below. `bin/harness doctor` prints the cloud status and reports a missing token.
 
 Engram's Claude plugin stopped shipping its MCP server in 0.1.16. When no `engram` server is registered, or its entry has no command, `bin/harness install` backs up `~/.claude.json` and registers one with `claude mcp add --scope user`, removing the broken entry first. Without the `claude` CLI on PATH, it prints that command for you to run. `bin/harness doctor` reports the missing server.
 
@@ -167,6 +167,7 @@ bin/harness clean --keep 10 --yes   # keep more than the default 5
 | Skills | `core/skills/<name>/`, with `name.<agent>.ext` for agent-specific files |
 | Subagents | `core/agents/<name>.toml`: one prompt plus a table per agent |
 | Guards | `core/hooks/` |
+| Why and how of each rule | `docs/methodology.md` |
 | Plugins, permissions, retired copies | `core/plugins.toml`, `core/permissions.toml`, `core/retired.txt` |
 
 After editing, run `python3 -m unittest tests.test_harness` and `bin/harness install`.

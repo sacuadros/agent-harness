@@ -12,6 +12,13 @@
         "args": ["{claude_hooks}/harness_guards.py", "backup"],
         "timeoutSec": 5
       }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "args": ["{claude_hooks}/enforce_memory_graph.py", "evidence", "--copilot"],
+        "timeoutSec": 10
+      }
     ]
   }
 }

@@ -1,7 +1,7 @@
 """Claude Code hooks that enforce Engram and CodeGraph usage.
 
   stop     Stop hook: blocks once when a substantive turn ends without an Engram write.
-  scope    Stop hook: blocks once when a turn's edits are large, to compare them with the request.
+  evidence Stop hook: blocks once when a turn edited code and ran no command or subagent afterwards.
   pretool  PreToolUse hook (Grep|Glob|Bash): denies broad search in a CodeGraph-indexed
            repo until the session has queried CodeGraph at least once.
 
@@ -16,10 +16,8 @@ from pathlib import Path
 
 ENGRAM_WRITES = ('mem_save', 'mem_update', 'mem_session_summary')
 EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}
+COPILOT_EDITS = {'apply_patch', 'create_file', 'replace_string_in_file', 'multi_replace_string_in_file'}
 SUBSTANTIVE_TOOL_CALLS = 8
-# ponytail: rough size proxy from Edit/Write input; shell and subagent edits go unseen, Codex diffs count context.
-SCOPE_FILES = 5
-SCOPE_LINES = 150
 # Tools that organize or recall work without producing anything worth remembering.
 BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite')
 MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
@@ -69,10 +67,26 @@ def codex_tool_uses(item):
     return []
 
 
+def copilot_tool_uses(data):
+    args = data.get('arguments') or {}
+    if data.get('toolName') == 'run_in_terminal':
+        return [{'name': 'Bash', 'input': {'command': args.get('command') or ''}}]
+    if data.get('toolName') in ('runSubagent', 'execution_subagent'):
+        return [{'name': 'Agent', 'input': {}}]
+    if data.get('toolName') not in COPILOT_EDITS:
+        return []
+    # An edit whose path cannot be read still counts as code ('?'): one extra ask beats a missed edit.
+    paths = [args.get('filePath'), *(r.get('filePath') for r in args.get('replacements') or []),
+             *re.findall(r'^\*\*\* (?:Add|Update|Delete) File: (.+?)\r?$', str(args.get('input') or ''), re.M)]
+    return [{'name': 'Edit', 'input': {'changes': {p: {} for p in paths if p} or {'?': {}}}}]
+
+
 def tool_uses(entry):
     item = codex_item(entry)
     if item is not None:
         return codex_tool_uses(item)
+    if entry.get('type') == 'tool.execution_start':
+        return copilot_tool_uses(entry.get('data') or {})
     content = entry.get('message', {}).get('content')
     if entry.get('type') != 'assistant' or not isinstance(content, list):
         return []
@@ -80,6 +94,8 @@ def tool_uses(entry):
 
 
 def is_user_prompt(entry):
+    if entry.get('type') == 'user.message':
+        return True  # Copilot
     payload = entry.get('payload')
     if entry.get('type') == 'response_item' and isinstance(payload, dict) \
             and payload.get('type') == 'message' and payload.get('role') == 'user':
@@ -144,33 +160,35 @@ def indexed_root(cwd):
     return None
 
 
-def edit_size(turn):
-    files, lines = set(), 0
-    for tool in turn:
-        if tool.get('name') not in EDIT_TOOLS:
-            continue
-        given = tool.get('input', {})
-        if 'changes' in given:  # Codex: path -> {type, unified_diff or content}
-            files.update(given['changes'])
-            texts = [c.get('unified_diff') or c.get('content') for c in given['changes'].values()]
-        else:
-            files.add(given.get('file_path') or given.get('notebook_path'))
-            texts = [given.get('new_string'), given.get('content'), given.get('new_source'),
-                     *(e.get('new_string') for e in given.get('edits', []))]
-        lines += sum(str(t or '').count('\n') for t in texts)
-    return len(files), lines
+DOC_SUFFIXES = ('.md', '.mdx', '.txt', '.rst')
 
 
-def scope_decision(data):
+def code_paths(tool):
+    given = tool.get('input', {})
+    if 'changes' in given:  # Codex: path -> {type, ...}
+        paths = list(given['changes'])
+    else:
+        paths = [given.get('file_path') or given.get('notebook_path') or '']
+    return [p for p in paths if not p.lower().endswith(DOC_SUFFIXES) and '.slices' not in Path(p).parts]
+
+
+def evidence_decision(data):
     if data.get('stop_hook_active'):
         return None
-    files, lines = edit_size(last_turn_tools(data.get('transcript_path', '')))
-    if files < SCOPE_FILES and lines < SCOPE_LINES:
+    turn = last_turn_tools(data.get('transcript_path', ''))
+    files, last = set(), -1
+    for i, t in enumerate(turn):
+        if t.get('name') in EDIT_TOOLS:
+            if code_paths(t):
+                files.update(code_paths(t))
+                last = i
+    if not files or any(t.get('name') in (*SHELLS, 'Agent') for t in turn[last + 1:]):
         return None
+    n = len(files)
     return {'decision': 'block', 'reason': (
-        f'Alcance: este turno editó {files} archivos y unas {lines} líneas. Compara cada cambio con el pedido '
-        'del usuario: revierte lo que no se pidió o di en una línea por qué hacía falta. '
-        'No repitas la respuesta anterior.')}
+        f'Evidencia: este turno editó {n} archivo{"s" if n > 1 else ""} de código y no ejecutó ningún comando '
+        'después de la última edición. Corre la verificación enfocada (test, build o el comando que muestre que '
+        'funciona) o di en una línea por qué no aplica. No repitas la respuesta anterior.')}
 
 
 def pretool_decision(data):
@@ -301,25 +319,54 @@ def selftest():
         path = codex_transcript(prompt, used, zst=True)
         assert pretool_decision({'tool_name': 'Bash', 'cwd': repo, 'transcript_path': path,
                                  'tool_input': {'command': 'rg foo'}}) is None
-    small = transcript(('prompt', 'x'), ('Edit', {'file_path': 'a', 'new_string': 'x'}))
-    assert scope_decision({'transcript_path': small}) is None
-    wide = transcript(('prompt', 'x'), *[('Edit', {'file_path': f, 'new_string': 'x'}) for f in 'abcde'])
-    assert scope_decision({'transcript_path': wide})['decision'] == 'block'
-    assert scope_decision({'transcript_path': wide, 'stop_hook_active': True}) is None
-    long_write = ('Write', {'file_path': 'a', 'content': 'x\n' * 150})
-    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), long_write)})['decision'] == 'block'
-    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), long_write, ('prompt', 'y'))}) is None
-    cx_wide = codex_transcript(prompt, {'type': 'FileChange', 'changes': {
-        f: {'type': 'update', 'unified_diff': '+x\n'} for f in 'abcde'}})
-    assert scope_decision({'transcript_path': cx_wide})['decision'] == 'block'
-    cx_small = codex_transcript(prompt, {'type': 'FileChange', 'changes': {'a': {'type': 'update', 'unified_diff': '+x\n'}}})
-    assert scope_decision({'transcript_path': cx_small}) is None
-    cx_added = codex_transcript(prompt, {'type': 'FileChange', 'changes': {'a': {'type': 'add', 'content': 'x\n' * 150}}})
-    assert scope_decision({'transcript_path': cx_added})['decision'] == 'block'
-    notebooks = [('NotebookEdit', {'notebook_path': f, 'new_source': 'x'}) for f in 'abcde']
-    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), *notebooks)})['decision'] == 'block'
-    multi = ('MultiEdit', {'file_path': 'a', 'edits': [{'new_string': 'x\n' * 150}]})
-    assert scope_decision({'transcript_path': transcript(('prompt', 'x'), multi)})['decision'] == 'block'
+    src = ('Edit', {'file_path': 'src/a.py'})
+    no_check = evidence_decision({'transcript_path': transcript(('prompt', 'x'), src)})
+    assert no_check['decision'] == 'block' and 'editó 1 archivo' in no_check['reason']
+    test_cmd = ('Bash', {'command': 'pytest'})
+    assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), src, test_cmd)}) is None
+    assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), test_cmd, src)})['decision'] == 'block'
+    assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), src, ('Agent', {}))}) is None
+    notes = [('Edit', {'file_path': 'README.md'}), ('Write', {'file_path': '/r/.slices/x.md'})]
+    assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), *notes)}) is None
+    assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), ('Read', {}))}) is None
+    assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), src), 'stop_hook_active': True}) is None
+    assert evidence_decision({'transcript_path': '/nonexistent'}) is None
+    cx_src = {'type': 'FileChange', 'changes': {'src/a.py': {'type': 'update', 'unified_diff': '+x\n'}}}
+    assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src)})['decision'] == 'block'
+    cx_run = {'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', 'pytest']}
+    assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, cx_run)}) is None
+    # Copilot (VS Code) transcripts: user.message and tool.execution_start events.
+    def copilot_transcript(*items):
+        f = tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False, encoding='utf-8')
+        for name, args in items:
+            event = {'type': 'user.message', 'data': {}} if name == 'prompt' else {
+                'type': 'tool.execution_start', 'data': {'toolName': name, 'arguments': args}}
+            f.write(json.dumps(event) + '\n')
+        f.close()
+        return f.name
+
+    cp_src = ('replace_string_in_file', {'filePath': 'src/a.py'})
+    cp_block = evidence_decision({'transcript_path': copilot_transcript(('prompt', {}), cp_src)})
+    assert cp_block['decision'] == 'block' and 'editó 1 archivo' in cp_block['reason']
+    cp_run = ('run_in_terminal', {'command': 'pytest'})
+    assert evidence_decision({'transcript_path': copilot_transcript(('prompt', {}), cp_src, cp_run)}) is None
+    assert evidence_decision({'transcript_path': copilot_transcript(('prompt', {}), cp_run, cp_src)})['decision'] == 'block'
+    def cp_decision(*items):
+        return evidence_decision({'transcript_path': copilot_transcript(('prompt', {}), *items)})
+
+    assert cp_decision(('create_file', {'filePath': 'README.md'}), ('read_file', {'filePath': 'a.py'})) is None
+    multi = ('multi_replace_string_in_file', {'replacements': [{'filePath': 'README.md'}, {'filePath': 'src/b.py'}]})
+    assert 'editó 1 archivo' in cp_decision(multi)['reason']
+    assert cp_decision(('apply_patch', {'input': '*** Begin Patch'}))['decision'] == 'block'
+    # Real Copilot patches name their files in the patch text; real turns also delegate to subagents.
+    assert cp_decision(('apply_patch', {'input': '*** Begin Patch\n*** Update File: /r/docs/x.md\n@@\n'})) is None
+    two = ('apply_patch', {'input': '*** Begin Patch\n*** Add File: /r/a.py\n+x\n*** Update File: /r/b.py\n@@\n'})
+    assert 'editó 2 archivos' in cp_decision(two)['reason']
+    assert cp_decision(('apply_patch', {'input': '*** Update File: docs/x.md\r\n@@\r\n'})) is None  # CRLF patch
+    for delegate in ('runSubagent', 'execution_subagent'):
+        assert cp_decision(cp_src, (delegate, {'description': 'run the tests'})) is None, delegate
+    old_turn = copilot_transcript(('prompt', {}), cp_src, ('prompt', {}), ('read_file', {'filePath': 'a.py'}))
+    assert evidence_decision({'transcript_path': old_turn}) is None
     # An unreadable transcript fails open instead of blocking every search.
     assert pretool_decision({'tool_name': 'Grep', 'cwd': repo, 'transcript_path': '/nonexistent'}) is None
     plain = tempfile.mkdtemp()
@@ -342,9 +389,12 @@ def main():
         return selftest()
     try:
         data = json.loads(sys.stdin.buffer.read())  # bytes: UTF-8 whatever the locale
-        result = {'stop': stop_decision, 'scope': scope_decision, 'pretool': pretool_decision}[mode](data)
+        result = {'stop': stop_decision, 'evidence': evidence_decision, 'pretool': pretool_decision}[mode](data)
     except Exception:
         return  # fail open: never wedge a session on a hook bug
+    if result and '--copilot' in sys.argv and mode == 'evidence':
+        # VS Code's Copilot reads a Stop decision only inside hookSpecificOutput; Copilot CLI documents the top level.
+        result = {**result, 'hookSpecificOutput': {'hookEventName': 'Stop', **result}}
     if result:
         print(json.dumps(result))
 

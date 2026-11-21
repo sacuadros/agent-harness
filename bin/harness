@@ -146,6 +146,7 @@ def fill(text, spec):
 
 
 HOOK_CONFIGS = {'claude': '.claude/settings.json', 'codex': '.codex/hooks.json'}
+AUTO_ENROLL = 'engram_auto_enroll.py'  # enrolls projects for cloud sync, so only PCs with a server get it
 HARNESS_SCRIPTS = {s for scripts in HOOK_SCRIPTS.values() for s in scripts}
 SELFTESTED = ('.claude/hooks/harness_guards.py', '.claude/hooks/enforce_memory_graph.py')
 
@@ -210,6 +211,9 @@ def hook_config(agent, home, standalone=False):
                        'codex_hooks': (home / '.codex/hooks').as_posix()}.items():
         template = template.replace('{' + key + '}', value)
     desired = json.loads(template)
+    if not engram_cloud_env(home):
+        desired = {event: kept for event, entries in desired.items()
+                   if (kept := [e for e in entries if hook_key(e) != AUTO_ENROLL])}
     for hook in (h for entries in desired.values() for entry in entries for h in entry['hooks']):
         if agent == 'claude':  # exec form: Claude spawns the interpreter itself, with no shell on any OS
             hook['command'], hook['args'] = python[0], python[1:] + hook['args']
@@ -588,6 +592,8 @@ def outputs(home, agent=None, agents=None):
                 continue
             scripts = HOOK_SCRIPTS['.claude/hooks']
         for script in scripts:
+            if script == AUTO_ENROLL and not engram_cloud_env(home):
+                continue
             files[f'{folder}/{script}'] = (HOOKS / script).read_bytes()
     if 'codex' in agents:
         files[RULES] = codex_rules(home)

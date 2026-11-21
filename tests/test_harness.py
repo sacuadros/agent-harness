@@ -19,10 +19,10 @@ REPO = Path(__file__).resolve().parent.parent
 HARNESS = REPO / 'bin' / 'harness'
 HOME = Path.home()
 MANAGED_SKILLS = {
-    'backlog', 'story', 'pair', 'brand-graphic-design', 'dependency-safety',
-    'performance-marketing-senior', 'promote-project-convention', 'secure-development',
-    'seo-copy-senior', 'software-architecture', 'unslop', 'work-unit-commits', 'chained-pr',
-    'cognitive-doc-design', 'systematic-debugging',
+    'backlog', 'story', 'pair', 'dependency-safety',
+    'promote-project-convention', 'secure-development',
+    'software-architecture', 'unslop', 'work-unit-commits', 'chained-pr',
+    'cognitive-doc-design', 'systematic-debugging', 'verification-ladders',
 }
 
 
@@ -69,6 +69,14 @@ class SliceFlowPacing(unittest.TestCase):
                          'leave it undone unless the user says to apply it'):
                 self.assertIn(rule, text, agent)
             self.assertNotIn('recording assumed answers', text, agent)
+
+    def test_every_agent_gets_one_classifier(self):
+        for agent in ('claude', 'codex', 'copilot'):
+            text = harness('render', agent)
+            self.assertIn('Classify before the first write', text, agent)
+            self.assertIn('`verification-ladders`', text, agent)
+            self.assertEqual(text.count('contracts others consume'), 1, agent)  # the risk items are listed once
+            self.assertNotIn('Select assurance independently', text, agent)
 
     def test_skills_do_not_wait_or_commit_on_their_own(self):
         skills = REPO / 'core' / 'skills'
@@ -534,6 +542,7 @@ class Hooks(unittest.TestCase):
         harness('install', '--home', str(self.home))
 
     def test_scripts_are_installed(self):
+        self.set_server()  # the auto-enroll script ships only with a server
         self.install()
         for script in self.SCRIPTS:
             self.assertEqual((self.home / '.claude' / 'hooks' / script).read_bytes(),
@@ -546,6 +555,43 @@ class Hooks(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data), encoding='utf-8', newline='\n')
         return path
+
+    def hook_commands(self, rel):
+        data = json.loads((self.home / rel).read_text(encoding='utf-8'))
+        return self.commands(e for entries in data['hooks'].values() for e in entries)
+
+    def test_auto_enroll_is_not_installed_without_a_server(self):
+        # The auto-enroll only enrolls projects for cloud sync: no server, no hook and no script.
+        self.install()
+        for rel in ('.claude/settings.json', '.codex/hooks.json'):
+            self.assertFalse([c for c in self.hook_commands(rel) if 'engram_auto_enroll' in c], rel)
+        self.assertFalse((self.home / '.claude/hooks/engram_auto_enroll.py').exists())
+        self.assertFalse((self.home / '.codex/hooks/engram_auto_enroll.py').exists())
+
+    def set_server(self):
+        config = self.home / '.agent-harness' / 'config.toml'
+        config.parent.mkdir(exist_ok=True)
+        config.write_text('engram_cloud_server = "https://engram.example"\n', encoding='utf-8', newline='\n')
+        return config
+
+    def test_auto_enroll_is_installed_with_a_server(self):
+        self.set_server()
+        self.install()
+        for rel in ('.claude/settings.json', '.codex/hooks.json'):
+            self.assertEqual(len([c for c in self.hook_commands(rel) if c.endswith('/engram_auto_enroll.py')]), 2, rel)
+        for rel in ('.claude/hooks/engram_auto_enroll.py', '.codex/hooks/engram_auto_enroll.py'):
+            self.assertEqual((self.home / rel).read_bytes(), (REPO / 'core/hooks/engram_auto_enroll.py').read_bytes())
+
+    def test_dropping_the_server_removes_the_auto_enroll(self):
+        config = self.set_server()
+        self.install()
+        config.unlink()
+        self.install()
+        for rel in ('.claude/settings.json', '.codex/hooks.json'):
+            self.assertFalse([c for c in self.hook_commands(rel) if 'engram_auto_enroll' in c], rel)
+        self.assertFalse((self.home / '.claude/hooks/engram_auto_enroll.py').exists())
+        self.assertFalse((self.home / '.codex/hooks/engram_auto_enroll.py').exists())
+        harness('check', '--home', str(self.home))  # raises on drift
 
     def commands(self, entries):
         return [' '.join([h['command'], *h.get('args', [])]) for entry in entries for h in entry['hooks']]
@@ -621,6 +667,9 @@ class Hooks(unittest.TestCase):
         # Exactly what Claude Code spawns: command + args with no shell (py -3 on Windows), from a spaced home.
         home = Path(tempfile.mkdtemp()) / 'with space'
         home.mkdir()
+        (home / '.agent-harness').mkdir()
+        (home / '.agent-harness' / 'config.toml').write_text(
+            'engram_cloud_server = "https://engram.example"\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(home))
         data = json.loads((home / '.claude' / 'settings.json').read_text(encoding='utf-8'))
         env = {**os.environ, 'HOME': str(home), 'USERPROFILE': str(home)}
@@ -640,8 +689,9 @@ class Hooks(unittest.TestCase):
 
     def test_claude_hooks_run_without_a_shell(self):
         # Exec form: Claude spawns the interpreter itself, so zsh, Git Bash and PowerShell behave alike.
-        (self.home / '.agent-harness').mkdir()
-        (self.home / '.agent-harness' / 'config.toml').write_text('python = "/usr/bin/python3"\n', encoding='utf-8', newline='\n')
+        (self.home / '.agent-harness').mkdir(exist_ok=True)
+        (self.home / '.agent-harness' / 'config.toml').write_text(
+            'python = "/usr/bin/python3"\nengram_cloud_server = "https://engram.example"\n', encoding='utf-8', newline='\n')
         self.install()
         hooks = (self.home / '.claude' / 'hooks').as_posix()
         data = json.loads((self.home / '.claude' / 'settings.json').read_text(encoding='utf-8'))
@@ -668,8 +718,9 @@ class Hooks(unittest.TestCase):
                 self.assertIn('PowerShell', entry['matcher'].split('|'), entry)
 
     def test_settings_merge_keeps_foreign_parts(self):
-        (self.home / '.agent-harness').mkdir()
-        (self.home / '.agent-harness' / 'config.toml').write_text('python = "/usr/bin/python3"\n', encoding='utf-8', newline='\n')
+        (self.home / '.agent-harness').mkdir(exist_ok=True)
+        (self.home / '.agent-harness' / 'config.toml').write_text(
+            'python = "/usr/bin/python3"\nengram_cloud_server = "https://engram.example"\n', encoding='utf-8', newline='\n')
         foreign = {'hooks': [{'type': 'command', 'command': 'codegraph prompt-hook'}]}
         settings = self.write_json('.claude/settings.json', {
             'env': {'X': '1'},
@@ -680,13 +731,13 @@ class Hooks(unittest.TestCase):
             }})
         self.install()
         data = json.loads(settings.read_text(encoding='utf-8'))
-        self.assertEqual(data['env'], {'X': '1', **SPAWN})
+        self.assertEqual(data['env'], {'X': '1', **SPAWN, 'ENGRAM_CLOUD_SERVER': 'https://engram.example', 'ENGRAM_CLOUD_AUTOSYNC': '1'})
         self.assertEqual(data['hooks']['UserPromptSubmit'], [foreign])
         hooks = (self.home / '.claude' / 'hooks').as_posix()
         self.assertEqual(self.commands(data['hooks']['Stop']), [
             f'/usr/bin/python3 {hooks}/enforce_memory_graph.py stop',
             f'/usr/bin/python3 {hooks}/engram_auto_enroll.py',
-            f'/usr/bin/python3 {hooks}/enforce_memory_graph.py scope'])
+            f'/usr/bin/python3 {hooks}/enforce_memory_graph.py evidence'])
         self.assertIn(f'/usr/bin/python3 {hooks}/harness_guards.py bash',
                       self.commands(data['hooks']['PreToolUse']))
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
@@ -715,6 +766,7 @@ class Hooks(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
 
     def test_codex_hooks_keep_foreign_entries_at_their_index(self):
+        self.set_server()
         foreign = {'hooks': [{'type': 'command', 'command': 'impeccable hook', 'timeout': 30}]}
         old = lambda cmd: {'hooks': [{'type': 'command', 'command': cmd}]}
         hooks_json = self.write_json('.codex/hooks.json', {'hooks': {
@@ -730,7 +782,7 @@ class Hooks(unittest.TestCase):
         self.assertEqual(stop[1], foreign)
         self.assertTrue(self.commands([stop[0]])[0].endswith('/.codex/hooks/engram_auto_enroll.py'))
         self.assertTrue(self.commands([stop[2]])[0].endswith('/.claude/hooks/enforce_memory_graph.py stop'))
-        self.assertTrue(self.commands([stop[3]])[0].endswith('/.claude/hooks/enforce_memory_graph.py scope'))
+        self.assertTrue(self.commands([stop[3]])[0].endswith('/.claude/hooks/enforce_memory_graph.py evidence'))
         self.assertEqual(len(hooks['PreToolUse']), 4)  # with the MCP guard
 
     def test_rules_block_keeps_codex_added_rules(self):
@@ -807,6 +859,9 @@ class Copilot(unittest.TestCase):
         self.assertIn(f'{self.home.as_posix()}/.claude/hooks/harness_guards.py bash --copilot', ' '.join(commands))
         if os.name == 'nt' and shutil.which('py'):
             self.assertTrue(commands[0].startswith('py -3 '), commands[0])
+        stop = [h[shell] for h in hooks['hooks']['Stop']]
+        self.assertEqual(len(stop), 1)
+        self.assertIn(f'{self.home.as_posix()}/.claude/hooks/enforce_memory_graph.py evidence --copilot', stop[0])
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
     def test_nothing_for_copilot_when_it_is_not_installed(self):
@@ -857,6 +912,34 @@ class NewPC(unittest.TestCase):
         result = subprocess.run([sys.executable, '-c', fake], capture_output=True, encoding='utf-8')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('needs Python 3.11 or newer', result.stderr)
+
+
+class EvidenceOutput(unittest.TestCase):
+    """VS Code's Copilot reads a Stop decision only inside hookSpecificOutput; Claude Code and Codex read it at the top."""
+
+    def decide(self, *flags):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / 't.jsonl'
+            transcript.write_text('\n'.join(json.dumps(e) for e in (
+                {'type': 'user.message', 'data': {}},
+                {'type': 'tool.execution_start', 'data': {
+                    'toolName': 'apply_patch', 'arguments': {'input': '*** Update File: src/a.py\r\n@@\r\n'}}},
+            )), encoding='utf-8')
+            result = subprocess.run(
+                [sys.executable, str(REPO / 'core/hooks/enforce_memory_graph.py'), 'evidence', *flags],
+                input=json.dumps({'transcript_path': str(transcript)}), capture_output=True, encoding='utf-8')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_copilot_gets_the_decision_inside_hook_specific_output(self):
+        out = self.decide('--copilot')
+        specific = out['hookSpecificOutput']
+        self.assertEqual((specific['hookEventName'], specific['decision']), ('Stop', 'block'))
+        self.assertIn('editó 1 archivo', specific['reason'])
+        self.assertEqual(out['decision'], 'block')  # Copilot CLI documents the top-level form
+
+    def test_claude_and_codex_output_is_unchanged(self):
+        self.assertEqual(set(self.decide()), {'decision', 'reason'})
 
 
 def load_hook(name):
