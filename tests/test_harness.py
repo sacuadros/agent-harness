@@ -32,17 +32,6 @@ def tree(root):
             if f.is_file() and '.bak' not in f.name}
 
 
-def node_strips_types():
-    try:
-        out = subprocess.run(['node', '--version'], capture_output=True, encoding='utf-8').stdout
-    except OSError:
-        return False
-    return bool(found := re.match(r'v(\d+)\.(\d+)', out)) and tuple(map(int, found.groups())) >= (22, 6)
-
-
-NODE_STRIPS_TYPES = node_strips_types()
-
-
 SPAWN = {'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '1'}  # install always sets it
 
 
@@ -66,7 +55,7 @@ class SliceFlowPacing(unittest.TestCase):
     """Every agent runs slices on its own after one backlog approval; commits wait for the user."""
 
     def test_every_agent_gets_the_pacing_contract(self):
-        for agent in ('claude', 'codex', 'opencode', 'pi', 'copilot'):
+        for agent in ('claude', 'codex', 'copilot'):
             text = harness('render', agent)
             for rule in ('one checkpoint before building: backlog approval',
                          'Commits and pushes always wait for the user', 'ask everything pending in one round'):
@@ -74,7 +63,7 @@ class SliceFlowPacing(unittest.TestCase):
             self.assertNotIn('sin pausas', text, agent)
 
     def test_every_agent_gets_the_scope_contract(self):
-        for agent in ('claude', 'codex', 'opencode', 'pi', 'copilot'):
+        for agent in ('claude', 'codex', 'copilot'):
             text = harness('render', agent)
             for rule in ('Do only what was asked', 'ask instead of assuming',
                          'leave it undone unless the user says to apply it'):
@@ -172,7 +161,7 @@ class Selection(unittest.TestCase):
 
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
-        for folder in ('.claude', '.codex', '.config/opencode', '.pi/agent', '.copilot'):
+        for folder in ('.claude', '.codex', '.copilot'):
             (self.home / folder).mkdir(parents=True)
         (self.home / '.claude.json').write_text('{}\n', encoding='utf-8')
 
@@ -185,8 +174,8 @@ class Selection(unittest.TestCase):
     def test_writes_only_for_the_chosen_agent(self):
         self.install('--agents', 'codex')
         self.assertEqual(self.exists('.codex/AGENTS.md', '.agents/skills/pair/SKILL.md'), [True, True])
-        self.assertEqual(self.exists('.claude/CLAUDE.md', '.claude/skills', '.claude/settings.json', '.pi/agent/AGENTS.md',
-                                     '.copilot/copilot-instructions.md', '.config/opencode/AGENTS.md'), [False] * 6)
+        self.assertEqual(self.exists('.claude/CLAUDE.md', '.claude/skills', '.claude/settings.json',
+                                     '.copilot/copilot-instructions.md'), [False] * 4)
 
     def test_shared_files_go_with_every_agent_that_reads_them(self):
         self.install('--agents', 'copilot')
@@ -214,16 +203,17 @@ class Selection(unittest.TestCase):
         self.assertEqual(run('check', '--home', str(self.home)).returncode, 0)
 
     def test_stale_copies_of_other_agents_stay(self):
-        stale = self.home / '.pi' / 'agent' / 'APPEND_SYSTEM.md'
+        stale = self.home / '.config' / 'copilot' / 'copilot-instructions.md'
+        stale.parent.mkdir(parents=True)
         stale.write_text('mine\n', encoding='utf-8')
         self.install('--agents', 'claude')
         self.assertTrue(stale.exists())
         self.assertEqual(run('check', '--home', str(self.home)).returncode, 0)
 
     def test_refuses_what_it_cannot_find(self):
-        shutil.rmtree(self.home / '.pi')
+        shutil.rmtree(self.home / '.copilot')
         env = {**os.environ, 'PATH': ''}
-        for name in ('pi', 'nope'):
+        for name in ('copilot', 'nope'):
             result = subprocess.run([sys.executable, str(HARNESS), 'install', '--home', str(self.home), '--agents', name],
                                     capture_output=True, encoding='utf-8', env=env)
             self.assertEqual(result.returncode, 1, name)
@@ -232,8 +222,8 @@ class Selection(unittest.TestCase):
 
     def test_broken_configs_of_other_agents_do_not_matter(self):
         for broken in ('[]', '{'):
-            (self.home / '.pi' / 'agent' / 'settings.json').write_text(broken, encoding='utf-8')
-            (self.home / '.config' / 'opencode' / 'opencode.json').write_text(broken, encoding='utf-8')
+            (self.home / '.copilot' / 'mcp-config.json').write_text(broken, encoding='utf-8')
+            (self.home / '.codex' / 'hooks.json').write_text(broken, encoding='utf-8')
             self.install('--agents', 'claude')
             self.assertEqual(run('check', '--home', str(self.home)).returncode, 0, broken)
 
@@ -264,7 +254,7 @@ class Selection(unittest.TestCase):
     def test_with_no_choice_every_stale_copy_still_goes(self):
         shutil.rmtree(self.home / '.copilot')
         stale = self.home / '.config' / 'copilot' / 'copilot-instructions.md'
-        stale.parent.mkdir()
+        stale.parent.mkdir(parents=True)
         stale.write_text('old\n', encoding='utf-8')
         self.install()
         self.assertFalse(stale.exists())
@@ -293,24 +283,24 @@ class Selection(unittest.TestCase):
 
     def test_detects_a_config_folder_or_a_command(self):
         tool = load_harness()
-        shutil.rmtree(self.home / '.pi')
-        with mock.patch.object(tool.shutil, 'which', lambda name: '/bin/pi' if name == 'pi' else None):
-            self.assertIn('pi', tool.detected(self.home))
+        shutil.rmtree(self.home / '.copilot')
+        with mock.patch.object(tool.shutil, 'which', lambda name: '/bin/copilot' if name == 'copilot' else None):
+            self.assertIn('copilot', tool.detected(self.home))
         with mock.patch.object(tool.shutil, 'which', lambda name: None):
-            self.assertEqual(tool.detected(self.home), {'claude', 'codex', 'opencode', 'copilot'})
+            self.assertEqual(tool.detected(self.home), {'claude', 'codex'})
 
     def test_text_picker_for_terminals_without_curses(self):
         tool = load_harness()
-        names = ['claude', 'codex', 'pi']
-        for answer, expected in (('', {'claude', 'pi'}), ('2', {'codex'}), ('1, 2', {'claude', 'codex'}), ('q', None)):
+        names = ['claude', 'codex', 'copilot']
+        for answer, expected in (('', {'claude', 'copilot'}), ('2', {'codex'}), ('1, 2', {'claude', 'codex'}), ('q', None)):
             with mock.patch('builtins.input', lambda prompt: answer), mock.patch('builtins.print'):
-                self.assertEqual(tool.pick_text(names, {'claude', 'pi'}, []), expected, answer)
+                self.assertEqual(tool.pick_text(names, {'claude', 'copilot'}, []), expected, answer)
 
     def test_text_picker_asks_again_for_unknown_answers(self):
         # Names work like numbers; a typo or an out-of-range number asks again instead of installing nothing.
         tool = load_harness()
-        names = ['claude', 'codex', 'pi']
-        for answers, expected in ((['codex, pi'], {'codex', 'pi'}), (['claude-code', '9', '2'], {'codex'})):
+        names = ['claude', 'codex', 'copilot']
+        for answers, expected in ((['codex, copilot'], {'codex', 'copilot'}), (['claude-code', '9', '2'], {'codex'})):
             replies = iter(answers)
             with mock.patch('builtins.input', lambda prompt: next(replies)), mock.patch('builtins.print') as shown:
                 self.assertEqual(tool.pick_text(names, {'claude'}, []), expected, answers)
@@ -450,7 +440,7 @@ class Skills(unittest.TestCase):
         self.assert_matches_installed('.claude')
 
     def test_codex_copies_match_installed(self):
-        # ~/.agents/skills is Codex's documented user folder, and Copilot and Pi read it too.
+        # ~/.agents/skills is Codex's documented user folder, and Copilot reads it too.
         self.assert_matches_installed('.agents')
         self.assertFalse((self.home / '.codex' / 'skills').exists())
 
@@ -459,7 +449,7 @@ class Skills(unittest.TestCase):
         codex = self.home / '.agents' / 'skills' / 'secure-development'
         self.assertFalse((claude / 'agents' / 'openai.yaml').exists())
         self.assertTrue((codex / 'agents' / 'openai.yaml').is_file())
-        # One agent-neutral SKILL.md: Copilot and Pi read the same copy, so it names each agent's tool.
+        # One agent-neutral SKILL.md: Copilot reads the same copy, so it names each agent's tool.
         skill = (claude / 'SKILL.md').read_text(encoding='utf-8')
         self.assertEqual(skill, (codex / 'SKILL.md').read_text(encoding='utf-8'))
         self.assertIn('/security-review', skill)
@@ -773,199 +763,6 @@ class Hooks(unittest.TestCase):
         self.assertIn(f'selftest failed: {broken}', result.stdout)
 
 
-class OpenCode(unittest.TestCase):
-    def setUp(self):
-        self.home = Path(tempfile.mkdtemp())
-
-    def test_render_has_every_section_and_its_own_orchestration(self):
-        text = harness('render', 'opencode')
-        self.assertEqual(len(re.findall(r'<!-- opencode-native:[a-z-]+ -->', text)), 10)
-        self.assertIn('## Native OpenCode Orchestration', text)
-        for name in ('implementation-worker', 'independent-reviewer', 'test-runner'):
-            self.assertIn(f'`{name}`', text)
-        self.assertNotIn('Claude Code', text)
-
-    def test_subagents_and_config_merge(self):
-        config = self.home / '.config' / 'opencode' / 'opencode.json'
-        config.parent.mkdir(parents=True)
-        config.write_text(json.dumps({'model': 'x/y', 'agent': {'orchestrator': {
-            'permission': {'task': {'*': 'deny', 'explore': 'allow'}}}}}), encoding='utf-8', newline='\n')
-        harness('install', '--home', str(self.home))
-        agents = self.home / '.config' / 'opencode' / 'agents'
-        reviewer = (agents / 'independent-reviewer.md').read_text(encoding='utf-8')
-        self.assertTrue(reviewer.startswith('---\ndescription: '))
-        self.assertIn('mode: subagent\n', reviewer)
-        self.assertIn('  edit: deny\n', reviewer)
-        self.assertIn('the primary agent', (agents / 'test-runner.md').read_text(encoding='utf-8'))
-        self.assertNotIn('  edit: deny\n', (agents / 'implementation-worker.md').read_text(encoding='utf-8'))
-        data = json.loads(config.read_text(encoding='utf-8'))
-        self.assertEqual(data['model'], 'x/y')
-        task = data['agent']['orchestrator']['permission']['task']
-        self.assertEqual(task['explore'], 'allow')
-        self.assertEqual(task['implementation-worker'], 'allow')
-        self.assertEqual(data['permission']['bash']['git push*'], 'ask')
-        self.assertIn('no changes', harness('install', '--home', str(self.home)))
-
-    def test_guard_plugin_is_filled_in_and_checked(self):
-        (self.home / '.config' / 'opencode').mkdir(parents=True)
-        harness('install', '--home', str(self.home))
-        plugin = self.home / '.config' / 'opencode' / 'plugins' / 'agent-harness.ts'
-        text = plugin.read_text(encoding='utf-8')
-        self.assertIn(f'"{self.home.as_posix()}/.claude/hooks"', text)
-        self.assertNotIn('{python}', text)
-        # The whole interpreter argv, so `py -3` on Windows keeps its -3.
-        python = json.loads(re.search(r'^const PYTHON: string\[\] = (.+)$', text, re.M)[1])
-        self.assertIsInstance(python, list)
-        if os.name == 'nt' and shutil.which('py'):
-            self.assertEqual(python, ['py', '-3'])
-        plugin.write_text(text + '// hand edit\n', encoding='utf-8', newline='\n')
-        result = run('check', '--home', str(self.home))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(f'drift: {plugin}', result.stdout)
-
-    @unittest.skipIf(os.name == 'nt', 'the harness installs OpenCode on macOS and Linux only')
-    @unittest.skipUnless(NODE_STRIPS_TYPES, 'needs Node 22.6+ to load the TypeScript plugin')
-    def test_guard_plugin_denies_on_opencode_1_and_2(self):
-        # OpenCode 2 loads only a default export with an id and setup(); 1.x calls server() or the named export.
-        (self.home / '.config' / 'opencode').mkdir(parents=True)
-        harness('install', '--home', str(self.home))
-        plugin = (self.home / '.config' / 'opencode' / 'plugins' / 'agent-harness.ts').as_uri()
-        rules = self.home / '.claude' / 'CLAUDE.md'  # global config: backed up before V2 write and patch edits
-        patch = f'*** Begin Patch\n*** Update File: {rules}\n@@\n-a\n+b\n*** End Patch'
-        script = f"""
-            const mod = await import({json.dumps(plugin)})
-            const denied = async (call) => {{ try {{ await call(); return false }} catch {{ return true }} }}
-            let hook
-            await mod.default.setup({{ tool: {{ hook: async (name, cb) => {{ if (name === "execute.before") hook = cb }} }} }})
-            const v1 = await mod.default.server()
-            console.log(JSON.stringify([mod.default.id,
-              await denied(() => hook({{ tool: "shell", sessionID: "s", input: {{ command: "codegraph uninit" }} }})),
-              await denied(() => hook({{ tool: "shell", sessionID: "s", input: {{ command: "ls" }} }})),
-              await denied(() => v1["tool.execute.before"]({{ tool: "bash", sessionID: "s" }}, {{ args: {{ command: "codegraph uninit" }} }}))]))
-            await hook({{ tool: "write", sessionID: "write", input: {{ path: {json.dumps(str(rules))} }} }})
-            await hook({{ tool: "patch", sessionID: "patch", input: {{ patchText: {json.dumps(patch)} }} }})
-        """
-        result = subprocess.run(['node', '--experimental-strip-types', '--no-warnings', '--input-type=module', '-e', script],
-                                capture_output=True, encoding='utf-8', timeout=60, env={**os.environ, 'HOME': str(self.home)})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), ['agent-harness', True, False, True])
-        backups = sorted(f.name.split('.')[-2] for f in (self.home / '.claude' / 'backups').glob('claude__CLAUDE.md.*'))
-        self.assertEqual(backups, ['patch', 'write'])
-
-    def test_stale_skill_copies_are_retired_to_a_backup(self):
-        stale = self.home / '.config' / 'opencode' / 'skills' / 'unslop' / 'SKILL.md'
-        stale.parent.mkdir(parents=True)
-        stale.write_text('old\n', encoding='utf-8', newline='\n')
-        harness('install', '--home', str(self.home))
-        self.assertFalse(stale.parent.exists())
-        moved = list((self.home / '.agent-harness' / 'backups').glob('*/.config/opencode/skills/unslop/SKILL.md'))
-        self.assertEqual([m.read_text(encoding='utf-8') for m in moved], ['old\n'])
-        stale.parent.mkdir(parents=True)
-        stale.write_text('back again\n', encoding='utf-8', newline='\n')
-        result = run('check', '--home', str(self.home))
-        self.assertIn(f'stale: {stale.parent}', result.stdout)
-
-    def test_nothing_for_opencode_when_it_is_not_installed(self):
-        harness('install', '--home', str(self.home))
-        self.assertFalse((self.home / '.config' / 'opencode').exists())
-
-
-class Pi(unittest.TestCase):
-    def setUp(self):
-        self.home = Path(tempfile.mkdtemp())
-
-    def test_render_uses_pi_skill_syntax_and_its_own_orchestration(self):
-        text = harness('render', 'pi')
-        self.assertEqual(len(re.findall(r'<!-- pi-native:[a-z-]+ -->', text)), 10)
-        self.assertIn('## Native Pi Orchestration', text)
-        self.assertIn('`/skill:promote-project-convention`', text)
-        self.assertNotIn('Claude Code', text)
-
-    def test_settings_subagents_and_append_system(self):
-        agent_dir = self.home / '.pi' / 'agent'
-        agent_dir.mkdir(parents=True)
-        (agent_dir / 'settings.json').write_text(json.dumps({'defaultModel': 'm', 'packages': ['npm:x'],
-                                                             'skills': ['~/.claude/skills', '~/mine']}),
-                                                 encoding='utf-8', newline='\n')
-        (agent_dir / 'APPEND_SYSTEM.md').write_text('old codegraph block\n', encoding='utf-8', newline='\n')
-        harness('install', '--home', str(self.home))
-        settings = json.loads((agent_dir / 'settings.json').read_text(encoding='utf-8'))
-        self.assertEqual(settings['defaultModel'], 'm')
-        self.assertEqual(settings['packages'], ['npm:x'])
-        # Pi reads ~/.agents/skills by default; ~/.claude/skills would load every harness skill twice.
-        self.assertEqual(settings['skills'], ['~/mine'])
-        reviewer = (agent_dir / 'agents' / 'independent-reviewer.md').read_text(encoding='utf-8')
-        self.assertTrue(reviewer.startswith('---\nname: independent-reviewer\n'))
-        self.assertIn('tools: read, grep, find, ls, bash\n', reviewer)
-        self.assertIn('edit, write', (agent_dir / 'agents' / 'implementation-worker.md').read_text(encoding='utf-8'))
-        self.assertFalse((agent_dir / 'APPEND_SYSTEM.md').exists())
-        self.assertIn('no changes', harness('install', '--home', str(self.home)))
-
-    def test_guard_extension_is_filled_in_and_checked(self):
-        (self.home / '.pi' / 'agent').mkdir(parents=True)
-        harness('install', '--home', str(self.home))
-        extension = self.home / '.pi' / 'agent' / 'extensions' / 'agent-harness.ts'
-        text = extension.read_text(encoding='utf-8')
-        self.assertIn(f'"{self.home.as_posix()}/.claude/hooks"', text)
-        self.assertIn('ctx.ui.confirm', text)
-        extension.write_text(text + '// hand edit\n', encoding='utf-8', newline='\n')
-        self.assertIn(f'drift: {extension}', run('check', '--home', str(self.home)).stdout)
-
-    def test_subagents_get_agents_md_and_the_skills_catalog(self):
-        # pi-subagents strips both from user agents unless the file asks for them.
-        (self.home / '.pi' / 'agent').mkdir(parents=True)
-        harness('install', '--home', str(self.home))
-        for f in (self.home / '.pi' / 'agent' / 'agents').glob('*.md'):
-            front = f.read_text(encoding='utf-8').split('---')[1]
-            self.assertIn('\ninheritProjectContext: true\n', front, f.name)
-            self.assertIn('\ninheritSkills: true\n', front, f.name)
-
-    NODE = shutil.which('node') and subprocess.run(
-        ['node', '--experimental-strip-types', '-e', '0'], capture_output=True).returncode == 0
-
-    def run_extension(self, python=None):
-        """Load the installed extension in node and return its answers to a bash and a write call."""
-        (self.home / '.pi' / 'agent').mkdir(parents=True)
-        harness('install', '--home', str(self.home))
-        text = (self.home / '.pi' / 'agent' / 'extensions' / 'agent-harness.ts').read_text(encoding='utf-8')
-        if python:
-            text = re.sub(r'^const PYTHON: string\[\] = .+$', lambda _: f'const PYTHON: string[] = {json.dumps(python)}',
-                          text, flags=re.M)
-        (self.home / 'ext.mts').write_text(text, encoding='utf-8', newline='\n')
-        (self.home / 'run.mts').write_text(
-            'const { default: register } = await import("./ext.mts")\n'
-            'let handler: any\n'
-            'register({ on: (_: string, h: any) => { handler = h } })\n'
-            'const out = []\n'
-            'for (const event of [{ toolName: "bash", input: { command: "ls" } }, { toolName: "write", input: { path: "a" } }])\n'
-            '  out.push(await handler(event, { hasUI: false }) ?? null)\n'
-            'console.log(JSON.stringify(out))\n', encoding='utf-8', newline='\n')
-        result = subprocess.run(['node', '--experimental-strip-types', '--no-warnings', 'run.mts'], cwd=self.home,
-                                capture_output=True, encoding='utf-8', env={**os.environ, 'HOME': str(self.home)})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
-
-    @unittest.skipUnless(NODE, 'needs node 22.6+')
-    def test_guard_extension_blocks_when_the_guard_fails(self):
-        out = self.run_extension([sys.executable, '-c', 'import sys; sys.exit(3)'])
-        self.assertEqual([r and r.get('block') for r in out], [True, True])
-
-    @unittest.skipUnless(NODE, 'needs node 22.6+')
-    def test_guard_extension_blocks_a_deny_from_a_guard_that_caught_its_error(self):
-        # harness_guards.py catches its own errors, prints a deny, and exits 0 (a failed backup, say).
-        deny = {'hookSpecificOutput': {'permissionDecision': 'deny', 'permissionDecisionReason': 'backup failed'}}
-        out = self.run_extension([sys.executable, '-c', f'print({json.dumps(json.dumps(deny))})'])
-        self.assertEqual([r and r.get('block') for r in out], [True, True])
-
-    @unittest.skipUnless(NODE, 'needs node 22.6+')
-    def test_guard_extension_allows_a_safe_command(self):
-        self.assertEqual(self.run_extension(), [None, None])
-
-    def test_nothing_for_pi_when_it_is_not_installed(self):
-        harness('install', '--home', str(self.home))
-        self.assertFalse((self.home / '.pi').exists())
-
-
 class Copilot(unittest.TestCase):
     PROMPTS = Path('Library/Application Support/Code/User/prompts')
 
@@ -1020,7 +817,7 @@ class NewPC(unittest.TestCase):
         self.home = Path(tempfile.mkdtemp())
 
     def test_clean_install_with_every_agent_passes_check(self):
-        for folder in ('.config/opencode', '.pi/agent', '.copilot', 'Library/Application Support/Code/User/prompts'):
+        for folder in ('.copilot', 'Library/Application Support/Code/User/prompts'):
             (self.home / folder).mkdir(parents=True)
         harness('install', '--home', str(self.home))
         result = run('check', '--home', str(self.home))
@@ -1124,8 +921,7 @@ class Portability(unittest.TestCase):
 
     def test_harness_commands_work_without_a_utf8_locale(self):
         home = Path(tempfile.mkdtemp())
-        for folder in ('.config/opencode', '.pi/agent', '.copilot'):
-            (home / folder).mkdir(parents=True)
+        (home / '.copilot').mkdir(parents=True)
         render = self.ascii_run(str(HARNESS), 'render', 'claude')
         self.assertEqual(render.returncode, 0, render.stderr)
         self.assertEqual(render.stdout.decode('utf-8'), harness('render', 'claude'))
@@ -1263,9 +1059,6 @@ class Doctor(unittest.TestCase):
         bin_dir = Path(tempfile.mkdtemp())
         (bin_dir / 'engram').write_text('#!/bin/sh\necho "engram $ENGRAM_V"\n', encoding='utf-8', newline='\n')
         (bin_dir / 'engram').chmod(0o755)
-        settings = self.home / '.pi' / 'agent' / 'settings.json'
-        settings.parent.mkdir(parents=True)
-        settings.write_text('{"packages": ["npm:gentle-engram@0.1.14"]}', encoding='utf-8')
         release = lambda *args, **kwargs: io.BytesIO(b'{"tag_name": "v3.7.0"}')
         which = lambda name: str(bin_dir / 'engram') if name == 'engram' else None
 
@@ -1277,10 +1070,8 @@ class Doctor(unittest.TestCase):
             return out.getvalue()
         out = doctor('3.5.4')
         self.assertIn('engram update available: 3.5.4 -> 3.7.0', out)
-        self.assertNotIn('engram setup pi', out)  # the old companion still matches the old binary
         out = doctor('3.7.0')
         self.assertNotIn('engram update available', out)
-        self.assertIn('Pi pins gentle-engram@0.1.14', out)
 
     @unittest.skipIf(os.name == 'nt', 'the fake codegraph and npm are shell scripts')
     def test_codegraph_update_asks_for_a_reindex(self):

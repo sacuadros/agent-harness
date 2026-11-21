@@ -50,18 +50,12 @@ HOOK_SCRIPTS = {
 AGENTS = {
     'claude': {'path': '.claude/CLAUDE.md', 'skills': '.claude/skills', 'marker': 'claude-native',
                'vars': {'agent': 'Claude Code', 'cmd': '/'}},
-    # ~/.agents/skills is Codex's documented user folder (~/.codex/skills is deprecated); Copilot and Pi read it too.
+    # ~/.agents/skills is Codex's documented user folder (~/.codex/skills is deprecated); Copilot reads it too.
     'codex': {'path': '.codex/AGENTS.md', 'skills': '.agents/skills', 'marker': 'codex-native',
               'vars': {'agent': 'Codex', 'cmd': '$'}},
-    # OpenCode reads ~/.claude/skills and ~/.agents/skills itself, so it gets no copy of its own.
-    'opencode': {'path': '.config/opencode/AGENTS.md', 'skills': None, 'marker': 'opencode-native',
-                 'vars': {'agent': 'OpenCode', 'cmd': '/'}},
     # Copilot reads ~/.agents/skills itself.
     'copilot': {'path': '.copilot/copilot-instructions.md', 'skills': None, 'marker': 'copilot-native',
                 'vars': {'agent': 'GitHub Copilot', 'cmd': '/'}},
-    # Pi reads ~/.agents/skills itself.
-    'pi': {'path': '.pi/agent/AGENTS.md', 'skills': None, 'marker': 'pi-native',
-           'vars': {'agent': 'Pi', 'cmd': '/skill:'}},
 }
 
 
@@ -70,8 +64,6 @@ CONFIGS = {
     '.claude/settings.json': json.loads,
     '.codex/config.toml': tomllib.loads,
     '.codex/hooks.json': json.loads,
-    '.config/opencode/opencode.json': json.loads,
-    '.pi/agent/settings.json': json.loads,
     '.copilot/mcp-config.json': json.loads,
 }
 
@@ -133,20 +125,6 @@ def codex_subagent(source, spec):
     return '\n'.join(lines) + f'\ndeveloper_instructions = """\n{fill(source["prompt"], spec)}"""\n'
 
 
-def opencode_subagent(source, spec):
-    lines = ['---', f'description: {json.dumps(spec["description"])}', 'mode: subagent', 'permission:']
-    lines += [f'  {key}: {value}' for key, value in spec['permission'].items()]
-    return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
-
-
-def pi_subagent(source, spec):
-    lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}',
-             f'tools: {spec["tools"]}',
-             # pi-subagents strips AGENTS.md and the skills catalog from user agents unless asked.
-             'inheritProjectContext: true', 'inheritSkills: true']
-    return '\n'.join(lines) + f'\n---\n\n{fill(source["prompt"], spec)}'
-
-
 def copilot_subagent(source, spec):
     lines = ['---', f'name: {source["name"]}', f'description: {json.dumps(spec["description"])}',
              f'tools: {json.dumps(spec["tools"])}']
@@ -155,8 +133,6 @@ def copilot_subagent(source, spec):
 
 SUBAGENT_FORMATS = {'claude': ('.claude/agents/{}.md', claude_subagent),
                     'codex': ('.codex/agents/{}.toml', codex_subagent),
-                    'opencode': ('.config/opencode/agents/{}.md', opencode_subagent),
-                    'pi': ('.pi/agent/agents/{}.md', pi_subagent),
                     'copilot': ('.copilot/agents/{}.agent.md', copilot_subagent)}
 
 
@@ -386,17 +362,6 @@ def codex_config(home, register=False):
     return text.encode()
 
 
-PI_SETTINGS = '.pi/agent/settings.json'
-
-
-def pi_settings(home):
-    """Drop the ~/.claude/skills entry earlier installs added: Pi reads ~/.agents/skills itself. Keep everything else."""
-    data = json.loads((home / PI_SETTINGS).read_text(encoding='utf-8'))
-    if isinstance(data.get('skills'), list) and '~/.claude/skills' in data['skills']:
-        data['skills'].remove('~/.claude/skills')
-    return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
-
-
 COPILOT_MCP = '.copilot/mcp-config.json'
 
 
@@ -408,25 +373,6 @@ def copilot_mcp(home):
     if 'engram' in servers or not engram:
         return None  # an entry of the user's own stays as written
     servers['engram'] = {'type': 'local', 'command': engram, 'args': ['mcp', '--tools=agent'], 'tools': ['*']}
-    return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
-
-
-OPENCODE_CONFIG = '.config/opencode/opencode.json'
-
-
-def opencode_config(home):
-    """Add the harness approval prompts and let the orchestrator call the harness subagents."""
-    data = json.loads((home / OPENCODE_CONFIG).read_text(encoding='utf-8'))
-    permission = data.setdefault('permission', {})
-    if isinstance(permission, dict):
-        bash = permission.setdefault('bash', {})
-        if isinstance(bash, dict):
-            for pattern in PERMISSIONS['opencode']['ask']:
-                bash.setdefault(pattern, 'ask')
-    task = data.get('agent', {}).get('orchestrator', {}).get('permission', {}).get('task')
-    if isinstance(task, dict):
-        for f in sorted(SUBAGENTS.glob('*.toml')):
-            task.setdefault(f.stem, 'allow')
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
@@ -459,7 +405,7 @@ def codex_rules(home):
 
 
 # Optional agents get files only on PCs that have them; Claude and Codex are always managed.
-OPTIONAL_AGENTS = {'opencode': '.config/opencode', 'pi': '.pi/agent', 'copilot': '.copilot'}
+OPTIONAL_AGENTS = {'copilot': '.copilot'}
 
 
 def present(agent, home):
@@ -469,7 +415,7 @@ def present(agent, home):
 # Which agents need each path, first match wins. Shared files go with every agent that reads them:
 # all guards run from ~/.claude/hooks, and all but Claude read the skills in ~/.agents/skills.
 OWNERS = (('.claude/hooks/', set(AGENTS)), ('.agents/', set(AGENTS) - {'claude'}), ('.claude/', {'claude'}),
-          ('.codex/', {'codex'}), ('.config/opencode/', {'opencode'}), ('.pi/', {'pi'}), ('.copilot/', {'copilot'}),
+          ('.codex/', {'codex'}), ('.copilot/', {'copilot'}),
           ('.config/copilot/', {'copilot'}), *((f'{user}/', {'copilot'}) for user in VSCODE_USER))
 
 
@@ -614,16 +560,6 @@ def outputs(home, agent=None, agents=None):
     if 'copilot' in agents and user:  # VS Code's local chat reads profile prompts, not ~/.copilot
         header = "---\napplyTo: '**'\ndescription: agent-harness rules (edit the agent-harness repo)\n---\n\n"
         files[f'{user}/prompts/agent-harness.instructions.md'] = (header + render('copilot')).encode()
-    if 'pi' in agents and (home / PI_SETTINGS).is_file():
-        try:
-            files[PI_SETTINGS] = pi_settings(home)
-        except ValueError:
-            pass  # unparseable config: `check` reports it as invalid
-    if 'opencode' in agents and (home / OPENCODE_CONFIG).is_file():
-        try:
-            files[OPENCODE_CONFIG] = opencode_config(home)
-        except ValueError:
-            pass  # unparseable config: `check` reports it as invalid
     if standalone or ('codex' in agents and (home / CODEX_CONFIG).is_file()):
         try:
             files[CODEX_CONFIG] = codex_config(home, register=standalone)
@@ -641,12 +577,6 @@ def outputs(home, agent=None, agents=None):
         for agent, (path, fmt) in SUBAGENT_FORMATS.items():
             if agent in agents:
                 files[path.format(source['name'])] = fmt(source, source[agent]).encode()
-    for agent, source, target in (('opencode', 'opencode/agent-harness.ts', '.config/opencode/plugins/agent-harness.ts'),
-                                  ('pi', 'pi/agent-harness.ts', '.pi/agent/extensions/agent-harness.ts')):
-        if agent in agents:
-            guard = (REPO / 'core' / source).read_text(encoding='utf-8')
-            guard = guard.replace('{python}', json.dumps(python_for(home))).replace('{claude_hooks}', (home / '.claude/hooks').as_posix())
-            files[target] = guard.encode()
     if 'copilot' in agents:
         files['.copilot/hooks/agent-harness.json'] = copilot_hooks(home)
         try:
@@ -1130,13 +1060,6 @@ def doctor(home, agent=None):
                         'then `codegraph index` in each indexed repo)')
     if update:
         findings.append(f'engram update available: {update} (brew upgrade engram)')
-    pi = home / PI_SETTINGS  # Engram 3.7.0 pairs with gentle-engram 0.7.0; Pi keeps the version setup pinned
-    if 'pi' in agents and binary and pi.is_file() and (found := re.match(r'(\d+)\.(\d+)', binary)) \
-            and tuple(map(int, found.groups())) >= (3, 7) \
-            and (pinned := re.search(r'npm:gentle-engram@((\d+)\.(\d+)\S*?)"', pi.read_text(encoding='utf-8'))) \
-            and (int(pinned[2]), int(pinned[3])) < (0, 7):
-        findings.append(f'Pi pins gentle-engram@{pinned[1]}, older than Engram {binary} expects '
-                        '(engram setup pi, then restart Pi)')
     if engram := shutil.which('engram'):  # the status names where the token came from, never its value
         try:
             status = subprocess.run([engram, 'cloud', 'status'], capture_output=True, encoding='utf-8',

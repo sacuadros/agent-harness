@@ -24,7 +24,7 @@ class CodexOnly(unittest.TestCase):
         foreign = {
             '.claude/settings.json': b'unrelated invalid config',
             '.claude/CLAUDE.md': b'private Claude instructions',
-            '.pi/agent/APPEND_SYSTEM.md': b'keep this retired Pi file',
+            '.config/copilot/copilot-instructions.md': b'keep this retired Copilot file',
             '.agents/skills/my-skill/SKILL.md': b'my own skill',
         }
         for rel, content in foreign.items():
@@ -50,15 +50,15 @@ class CodexOnly(unittest.TestCase):
         stale = self.home / '.codex/skills/pair/SKILL.md'
         stale.parent.mkdir(parents=True)
         stale.write_bytes(b'old Codex copy')
-        foreign = self.home / '.pi/agent/APPEND_SYSTEM.md'
+        foreign = self.home / '.config/copilot/copilot-instructions.md'
         foreign.parent.mkdir(parents=True)
-        foreign.write_bytes(b'keep Pi')
+        foreign.write_bytes(b'keep Copilot')
         harness('install', '--agent', 'codex', '--dry-run', '--home', str(self.home))
         self.assertTrue(stale.is_file())
         self.assertFalse((self.home / '.codex/AGENTS.md').exists())
         harness('install', '--agent', 'codex', '--home', str(self.home))
         self.assertFalse(stale.exists())
-        self.assertEqual(foreign.read_bytes(), b'keep Pi')
+        self.assertEqual(foreign.read_bytes(), b'keep Copilot')
         backups = list((self.home / '.agent-harness/backups').glob('*/.codex/skills/pair/SKILL.md'))
         self.assertEqual([path.read_bytes() for path in backups], [b'old Codex copy'])
 

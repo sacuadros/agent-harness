@@ -6,15 +6,11 @@ One source of rules, skills, subagents, and guard hooks for the coding agents I 
 |---|---|---|---|---|
 | Claude Code (CLI and the Claude app's Code tab) | `~/.claude/CLAUDE.md` | `~/.claude/skills` | `~/.claude/agents/*.md` | hooks in `~/.claude/settings.json` |
 | Codex | `~/.codex/AGENTS.md` | `~/.agents/skills` | `~/.codex/agents/*.toml` | `~/.codex/hooks.json` + execpolicy rules |
-| OpenCode | `~/.config/opencode/AGENTS.md` | reads `~/.claude/skills` and `~/.agents/skills` | `~/.config/opencode/agents/*.md` | plugin for OpenCode 1.x and 2 + `permission.bash` asks |
-| Pi | `~/.pi/agent/AGENTS.md` | reads `~/.agents/skills` | `~/.pi/agent/agents/*.md` (pi-subagents) | extension with confirmations |
 | GitHub Copilot | `~/.copilot/copilot-instructions.md` and the VS Code prompts folder | reads `~/.agents/skills` | `~/.copilot/agents/*.agent.md` | `~/.copilot/hooks/agent-harness.json` |
 
 The first `install` in a terminal lists the agents it finds on this PC, by their own config or command, with the folder each one uses, and lets you pick at least one. It remembers the choice in `~/.agent-harness/agents`, and later `install`, `check`, and `doctor` runs follow it. To change it, run `bin/harness install --choose`, or skip the picker with `--agents claude,codex`. Dropping an agent leaves its files in place. Some files are shared: every agent's guards run from `~/.claude/hooks`, and every agent but Claude Code reads the skills in `~/.agents/skills`.
 
-With no terminal and no saved choice, `install` covers Claude Code, Codex, and any of OpenCode, Pi, and Copilot whose config folder exists. On Windows the picker is a numbered prompt, because Python ships there without `curses`; it takes numbers or names (`claude,codex`) and asks again when an answer matches no agent.
-
-`install` removes the `~/.claude/skills` entry earlier versions added to Pi's `skills` setting, so a third-party skill that lives only in `~/.claude/skills` no longer reaches Pi; install it in `~/.agents/skills` too. OpenCode reads both folders and sees each harness skill twice, with the same content.
+With no terminal and no saved choice, `install` covers Claude Code, Codex, and Copilot when its config folder exists. On Windows the picker is a numbered prompt, because Python ships there without `curses`; it takes numbers or names (`claude,codex`) and asks again when an answer matches no agent.
 
 ## What the harness enforces
 
@@ -28,7 +24,6 @@ With no terminal and no saved choice, `install` covers Claude Code, Codex, and a
 ## Requirements
 
 - macOS, Linux, or Windows 10/11 (native, not WSL), Git, and Python 3.11 or newer. Python 3.14 adds the Codex compressed-transcript checks; on older versions the hook skips them.
-- On Windows the harness manages Claude Code, Codex, and GitHub Copilot; OpenCode and Pi are macOS and Linux for now.
 - The agents you use, already installed and signed in.
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) and [CodeGraph](https://github.com/colbymchenry/codegraph), which the rules expect.
 
@@ -149,7 +144,7 @@ Every file `install` replaces or retires is copied first to `~/.agent-harness/ba
 | Instructions | `core/instructions/NN-section.md`, with `NN-section.<agent>.md` variants where the text differs by agent |
 | Skills | `core/skills/<name>/`, with `name.<agent>.ext` for agent-specific files |
 | Subagents | `core/agents/<name>.toml`: one prompt plus a table per agent |
-| Guards | `core/hooks/`, `core/opencode/agent-harness.ts`, `core/pi/agent-harness.ts` |
+| Guards | `core/hooks/` |
 | Plugins, permissions, retired copies | `core/plugins.toml`, `core/permissions.toml`, `core/retired.txt` |
 
 After editing, run `python3 -m unittest tests.test_harness` and `bin/harness install`.
