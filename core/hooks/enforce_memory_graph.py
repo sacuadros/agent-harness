@@ -19,7 +19,8 @@ EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}
 COPILOT_EDITS = {'apply_patch', 'create_file', 'replace_string_in_file', 'multi_replace_string_in_file'}
 SUBSTANTIVE_TOOL_CALLS = 8
 # Tools that organize or recall work without producing anything worth remembering.
-BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite')
+BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite',
+               'CodexSubagent')  # Codex subagent activity: only the evidence gate counts it
 MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
 CLI_WRITE = re.compile(r'(?:^|[;&|\n]\s*)engram\s+(?:save|update)\b')
 SEARCH_CMD = re.compile(r'^\s*(?:rg|grep|egrep|ag|find|fd|git\s+grep)\b'  # PowerShell below
@@ -62,6 +63,8 @@ def codex_tool_uses(item):
         return [{'name': 'Bash', 'input': {'command': cmd[-1] if isinstance(cmd, list) else cmd}}]
     if kind == 'McpToolCall':
         return [{'name': f'mcp__{item.get("server")}__{item.get("tool")}', 'input': {}}]
+    if kind in ('SubAgentActivity', 'CollabAgentToolCall'):
+        return [{'name': 'CodexSubagent', 'input': {}}]
     if kind == 'FileChange':
         return [{'name': 'Edit', 'input': {'changes': item.get('changes') or {}}}]
     return []
@@ -182,7 +185,7 @@ def evidence_decision(data):
             if code_paths(t):
                 files.update(code_paths(t))
                 last = i
-    if not files or any(t.get('name') in (*SHELLS, 'Agent') for t in turn[last + 1:]):
+    if not files or any(t.get('name') in (*SHELLS, 'Agent', 'CodexSubagent') for t in turn[last + 1:]):
         return None
     n = len(files)
     return {'decision': 'block', 'reason': (
@@ -335,6 +338,10 @@ def selftest():
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src)})['decision'] == 'block'
     cx_run = {'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', 'pytest']}
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, cx_run)}) is None
+    # A Codex subagent after the edit counts as verification, and never as work for the Engram stop hook.
+    for delegated in ('SubAgentActivity', 'CollabAgentToolCall'):
+        assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, {'type': delegated})}) is None, delegated
+    assert stop_decision({'transcript_path': codex_transcript(prompt, *[{'type': 'SubAgentActivity'}] * 9)}) is None
     # Copilot (VS Code) transcripts: user.message and tool.execution_start events.
     def copilot_transcript(*items):
         f = tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False, encoding='utf-8')

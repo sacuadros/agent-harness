@@ -103,14 +103,13 @@ The block message says how many code files the turn edited and that no command r
 
 What counts as code: any edited file except `.md`, `.mdx`, `.txt`, `.rst`, and anything under `.slices/`. Claude Code edits come from the `Edit`, `Write`, `MultiEdit` and `NotebookEdit` tools; Codex edits come from file-change items; Copilot edits come from `apply_patch`, `create_file`, `replace_string_in_file` and `multi_replace_string_in_file`. A Copilot edit whose file path cannot be read counts as code.
 
-What counts as verification: any shell command (`Bash`, `PowerShell`, or `run_in_terminal` in Copilot) or subagent call (`Agent` in Claude Code, `runSubagent` and `execution_subagent` in Copilot) after the last code edit. A command before the last edit does not count, since the edit may have broken what it checked.
+What counts as verification: any shell command (`Bash`, `PowerShell`, or `run_in_terminal` in Copilot) or subagent call (`Agent` in Claude Code, subagent activity items in Codex, `runSubagent` and `execution_subagent` in Copilot) after the last code edit. A command before the last edit does not count, since the edit may have broken what it checked.
 
 ### Known limits
 
 - It does not check that the command is a test. `ls` after an edit satisfies the gate. The gate asks for evidence to exist, not for proof that it is good.
 - Edits made through a shell command, and MCP tools that run commands, are not seen.
-- Codex subagent calls are not seen: a Codex turn that edits code and leaves every check to a subagent is asked once.
-- Copilot is covered through its `Stop` hook, called with `--copilot` because VS Code reads the decision inside `hookSpecificOutput`. The transcript reader was checked against real Copilot transcripts on one Mac (edits, terminal commands and subagent calls all resolved), but the hook has not been tested firing inside VS Code itself, where agent hooks are in preview.
+- Copilot is covered through its `Stop` hook, called with `--copilot`. This was checked against the VS Code Copilot extension installed on one Mac: it accepts the `Stop` event name, reads hooks from `~/.copilot/hooks`, sends `transcript_path` and `stop_hook_active`, and reads the decision only inside `hookSpecificOutput`. The transcript reader was checked against real Copilot transcripts. The hook has not yet been seen firing in a live VS Code chat, where agent hooks are in preview.
 
 ### Why it replaced the scope check
 
