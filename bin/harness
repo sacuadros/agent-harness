@@ -953,6 +953,8 @@ def check(home, agent=None, runtime=False):
         if wanted(rel, agents) and path.is_file():
             try:
                 data = parse(path.read_text(encoding='utf-8'))
+                if not isinstance(data, dict):
+                    raise ValueError('the file is not a JSON object')
             except ValueError as error:  # JSONDecodeError and TOMLDecodeError are ValueErrors
                 problems.append(f'invalid: {path}: {error}')
                 continue

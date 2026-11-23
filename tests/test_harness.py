@@ -1181,6 +1181,11 @@ class EngramMcp(unittest.TestCase):
             self.run_harness('install')
             self.assertEqual(config.read_text(encoding='utf-8'), odd)
             self.run_harness('doctor')
+        # check reports a file that is not a JSON object instead of crashing on it
+        result = subprocess.run([sys.executable, str(HARNESS), 'check', '--home', str(self.home)],
+                                capture_output=True, encoding='utf-8', env=self.env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f'invalid: {config}', result.stdout)
 
     def test_doctor_reports_a_missing_engram_mcp(self):
         self.assertIn('engram MCP is not registered for Claude Code', self.run_harness('doctor'))
