@@ -115,6 +115,48 @@ What counts as verification: any shell command (`Bash`, `PowerShell`, or `run_in
 
 The scope check blocked turns that edited 5 files or 150 lines, sized from Edit and Write input it could only partly see. The evidence gate asks for what the rule above requires. Keeping both would stack two Stop prompts on the same turn, so the scope check was removed.
 
+## Memory and CodeGraph in Copilot
+
+### Why
+
+Claude Code and Codex already had two hook rules: save Engram memory after substantive work, and query CodeGraph before broad searches in an indexed repo. Copilot had both only as instructions in prose. The same hook now serves all three agents, so the rules mean the same thing everywhere.
+
+### How
+
+Two modes of `core/hooks/enforce_memory_graph.py`, called with `--copilot`. Both read the session transcript and reuse the Claude Code and Codex logic; the Copilot reader only maps its tool calls to the names that logic already knows.
+
+```mermaid
+flowchart TD
+    subgraph stop [Stop: stop --copilot]
+        S1[Turn stops] --> S2{stop_hook_active?}
+        S2 -- yes --> SZ[Let it stop]
+        S2 -- no --> S3{Engram write this turn?}
+        S3 -- yes --> SZ
+        S3 -- no --> S4{Code edited, or 8 or more work calls?}
+        S4 -- no --> SZ
+        S4 -- yes --> S5[Block once: save to Engram<br/>or say nothing durable]
+    end
+    subgraph pre [PreToolUse: pretool --copilot]
+        P1[Search tool call] --> P2{Repo root has .codegraph?}
+        P2 -- no --> PZ[Allow]
+        P2 -- yes --> P3{CodeGraph used in this session?}
+        P3 -- yes --> PZ
+        P3 -- no --> P4[Deny: query CodeGraph first]
+    end
+```
+
+What counts as an Engram write: `mcp_engram_mem_save`, `mcp_engram_mem_update` and `mcp_engram_mem_session_summary`. Engram reads, `manage_todo_list`, `tool_search`, `task_complete`, `vscode_askQuestions`, `memory` and subagent calls are not work.
+
+What counts as work: any file edit, documentation included, or 8 or more other tool calls in the turn. Subagent calls are not "results arrive later" as in Claude Code, because Copilot subagents finish inside the turn.
+
+What counts as a search: `grep_search`, `file_search`, `semantic_search`, and `run_in_terminal` with `rg`, `grep`, `find` and similar commands. CodeGraph has no MCP server in Copilot, so using it means a terminal command that starts with `codegraph`.
+
+### Limits
+
+- VS Code only. The Copilot CLI sends its events in another shape; these hooks ignore them and allow everything.
+- The hooks have not been seen firing in a live VS Code chat, where agent hooks are in preview. They were checked against real Copilot transcripts and the hook's own tests.
+- The repo root comes from the event's `cwd`, or the hook's working directory if the event has none. If VS Code starts hooks outside the workspace, the CodeGraph rule does not fire. In a workspace with several folders, another folder's index can deny a search once; one `codegraph` command in the terminal lifts it. The command has to start the terminal line (`codegraph explore ...`, not `npx codegraph ...`).
+
 ## Engram cloud is optional
 
 ### Why

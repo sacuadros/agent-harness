@@ -17,10 +17,11 @@ from pathlib import Path
 ENGRAM_WRITES = ('mem_save', 'mem_update', 'mem_session_summary')
 EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}
 COPILOT_EDITS = {'apply_patch', 'create_file', 'replace_string_in_file', 'multi_replace_string_in_file'}
+COPILOT_SEARCH = ('grep_search', 'file_search', 'semantic_search')
 SUBSTANTIVE_TOOL_CALLS = 8
 # Tools that organize or recall work without producing anything worth remembering.
 BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite',
-               'CodexSubagent')  # Codex subagent activity: only the evidence gate counts it
+               'Subagent', 'manage_todo_list', 'tool_search', 'task_complete', 'vscode_askQuestions', 'memory')  # Codex and Copilot subagents: only the evidence gate counts them
 MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
 CLI_WRITE = re.compile(r'(?:^|[;&|\n]\s*)engram\s+(?:save|update)\b')
 SEARCH_CMD = re.compile(r'^\s*(?:rg|grep|egrep|ag|find|fd|git\s+grep)\b'  # PowerShell below
@@ -64,7 +65,7 @@ def codex_tool_uses(item):
     if kind == 'McpToolCall':
         return [{'name': f'mcp__{item.get("server")}__{item.get("tool")}', 'input': {}}]
     if kind in ('SubAgentActivity', 'CollabAgentToolCall'):
-        return [{'name': 'CodexSubagent', 'input': {}}]
+        return [{'name': 'Subagent', 'input': {}}]
     if kind == 'FileChange':
         return [{'name': 'Edit', 'input': {'changes': item.get('changes') or {}}}]
     return []
@@ -75,9 +76,9 @@ def copilot_tool_uses(data):
     if data.get('toolName') == 'run_in_terminal':
         return [{'name': 'Bash', 'input': {'command': args.get('command') or ''}}]
     if data.get('toolName') in ('runSubagent', 'execution_subagent'):
-        return [{'name': 'Agent', 'input': {}}]
+        return [{'name': 'Subagent', 'input': {}}]  # runs inside the turn: nothing arrives later, unlike Claude's Agent
     if data.get('toolName') not in COPILOT_EDITS:
-        return []
+        return [{'name': data.get('toolName') or '', 'input': args}]
     # An edit whose path cannot be read still counts as code ('?'): one extra ask beats a missed edit.
     paths = [args.get('filePath'), *(r.get('filePath') for r in args.get('replacements') or []),
              *re.findall(r'^\*\*\* (?:Add|Update|Delete) File: (.+?)\r?$', str(args.get('input') or ''), re.M)]
@@ -185,7 +186,7 @@ def evidence_decision(data):
             if code_paths(t):
                 files.update(code_paths(t))
                 last = i
-    if not files or any(t.get('name') in (*SHELLS, 'Agent', 'CodexSubagent') for t in turn[last + 1:]):
+    if not files or any(t.get('name') in (*SHELLS, 'Agent', 'Subagent') for t in turn[last + 1:]):
         return None
     n = len(files)
     return {'decision': 'block', 'reason': (
@@ -196,6 +197,9 @@ def evidence_decision(data):
 
 def pretool_decision(data):
     tool = data.get('tool_name')
+    # VS Code Copilot: its terminal is a shell, and its three search tools are Grep/Glob.
+    copilot = tool == 'run_in_terminal' or tool in COPILOT_SEARCH
+    tool = 'Bash' if tool == 'run_in_terminal' else 'Grep' if copilot else tool
     if tool in SHELLS and not SEARCH_CMD.match(data.get('tool_input', {}).get('command', '')):
         return None
     if tool not in ('Grep', 'Glob', *SHELLS) or not indexed_root(data.get('cwd') or '.'):
@@ -207,9 +211,10 @@ def pretool_decision(data):
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',
         'permissionDecisionReason': (
-            'CodeGraph primero: este repo tiene índice .codegraph. Usa codegraph_explore '
-            '(o el CLI `codegraph explore/query`) antes de buscar con Grep/Glob/grep/find. '
-            'Después de una consulta a CodeGraph la búsqueda queda permitida.')}}
+            'CodeGraph primero: este repo tiene índice .codegraph. '
+            + ('Corre `codegraph explore "<pregunta>"` en la terminal antes de buscar. ' if copilot else
+               'Usa codegraph_explore (o el CLI `codegraph explore/query`) antes de buscar con Grep/Glob/grep/find. ')
+            + 'Después de una consulta a CodeGraph la búsqueda queda permitida.')}}
 
 
 def selftest():
@@ -374,10 +379,46 @@ def selftest():
         assert cp_decision(cp_src, (delegate, {'description': 'run the tests'})) is None, delegate
     old_turn = copilot_transcript(('prompt', {}), cp_src, ('prompt', {}), ('read_file', {'filePath': 'a.py'}))
     assert evidence_decision({'transcript_path': old_turn}) is None
-    # An unreadable transcript fails open instead of blocking every search.
-    assert pretool_decision({'tool_name': 'Grep', 'cwd': repo, 'transcript_path': '/nonexistent'}) is None
+    # Copilot Engram stop rule: edits and 8+ work calls need an Engram write; housekeeping does not count.
+    def cp_stop(*items, **extra):
+        return stop_decision({'transcript_path': copilot_transcript(('prompt', {}), *items), **extra})
+
+    assert cp_stop(cp_src)['decision'] == 'block'
+    assert cp_stop(cp_src, ('mcp_engram_mem_save', {})) is None
+    read = ('read_file', {'filePath': 'a.py'})
+    assert cp_stop(*[read] * SUBSTANTIVE_TOOL_CALLS)['decision'] == 'block'
+    assert cp_stop(*[read] * (SUBSTANTIVE_TOOL_CALLS - 1)) is None
+    quiet = [('manage_todo_list', {}), ('tool_search', {}), ('task_complete', {}), ('vscode_askQuestions', {}),
+             ('memory', {}), ('mcp_engram_mem_search', {}), ('mcp_engram_mem_context', {}),
+             ('runSubagent', {}), ('execution_subagent', {})]
+    assert cp_stop(*quiet * 2) is None
+    assert cp_stop(('runSubagent', {}), *[read] * SUBSTANTIVE_TOOL_CALLS)['decision'] == 'block'  # not "arrives later"
+    assert cp_stop(cp_src, stop_hook_active=True) is None
     plain = tempfile.mkdtemp()
     (Path(plain) / '.git').mkdir()
+    # Copilot CodeGraph rule: VS Code names tools in tool_name/tool_input; CodeGraph runs in the terminal.
+    def cp_pre(tool, tool_input, *before, cwd=repo, transcript_path=None):
+        return pretool_decision({'tool_name': tool, 'tool_input': tool_input, 'cwd': cwd,
+                                 'transcript_path': transcript_path or copilot_transcript(('prompt', {}), *before)})
+
+    for searcher in ('grep_search', 'file_search', 'semantic_search'):
+        assert cp_pre(searcher, {'query': 'foo'})['hookSpecificOutput']['permissionDecision'] == 'deny', searcher
+    assert cp_pre('run_in_terminal', {'command': 'rg foo'})
+    # Copilot has no CodeGraph MCP tool: its deny must point at the terminal, not at codegraph_explore.
+    for told in (cp_pre('grep_search', {'query': 'foo'}), cp_pre('run_in_terminal', {'command': 'rg foo'})):
+        reason = told['hookSpecificOutput']['permissionDecisionReason']
+        assert 'terminal' in reason and 'codegraph_explore' not in reason, reason
+    assert cp_pre('run_in_terminal', {'command': 'npm test'}) is None
+    assert cp_pre('read_file', {'filePath': 'a.py'}) is None
+    cp_graph = ('run_in_terminal', {'command': 'codegraph explore x'})
+    assert cp_pre('grep_search', {'query': 'foo'}, cp_graph) is None
+    assert cp_pre('run_in_terminal', {'command': 'rg foo'}, cp_graph) is None
+    assert cp_pre('grep_search', {'query': 'foo'}, cwd=plain) is None  # no index
+    assert cp_pre('grep_search', {'query': 'foo'}, transcript_path='/nonexistent') is None
+    assert pretool_decision({'toolName': 'grep_search', 'toolArgs': '{}', 'cwd': repo,
+                             'transcript_path': copilot_transcript(('prompt', {}))}) is None  # Copilot CLI shape
+    # An unreadable transcript fails open instead of blocking every search.
+    assert pretool_decision({'tool_name': 'Grep', 'cwd': repo, 'transcript_path': '/nonexistent'}) is None
     assert pretool_decision({'tool_name': 'Grep', 'cwd': plain, 'transcript_path': fresh}) is None
     # ~/.codegraph is the CLI's global state dir, not a project index.
     home = Path(tempfile.mkdtemp())
@@ -399,7 +440,7 @@ def main():
         result = {'stop': stop_decision, 'evidence': evidence_decision, 'pretool': pretool_decision}[mode](data)
     except Exception:
         return  # fail open: never wedge a session on a hook bug
-    if result and '--copilot' in sys.argv and mode == 'evidence':
+    if result and '--copilot' in sys.argv and mode in ('stop', 'evidence'):
         # VS Code's Copilot reads a Stop decision only inside hookSpecificOutput; Copilot CLI documents the top level.
         result = {**result, 'hookSpecificOutput': {'hookEventName': 'Stop', **result}}
     if result:

@@ -860,8 +860,12 @@ class Copilot(unittest.TestCase):
         if os.name == 'nt' and shutil.which('py'):
             self.assertTrue(commands[0].startswith('py -3 '), commands[0])
         stop = [h[shell] for h in hooks['hooks']['Stop']]
-        self.assertEqual(len(stop), 1)
-        self.assertIn(f'{self.home.as_posix()}/.claude/hooks/enforce_memory_graph.py evidence --copilot', stop[0])
+        guard = f'{self.home.as_posix()}/.claude/hooks/enforce_memory_graph.py'
+        self.assertEqual(len(stop), 2)
+        self.assertIn(f'{guard} evidence --copilot', stop[0])
+        self.assertIn(f'{guard} stop --copilot', stop[1])
+        self.assertIn(f'{guard} pretool --copilot', ' '.join(commands))
+        self.assertEqual(len(commands), 3)
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
 
     def test_nothing_for_copilot_when_it_is_not_installed(self):
@@ -917,7 +921,7 @@ class NewPC(unittest.TestCase):
 class EvidenceOutput(unittest.TestCase):
     """VS Code's Copilot reads a Stop decision only inside hookSpecificOutput; Claude Code and Codex read it at the top."""
 
-    def decide(self, *flags):
+    def decide(self, *flags, mode='evidence'):
         with tempfile.TemporaryDirectory() as tmp:
             transcript = Path(tmp) / 't.jsonl'
             transcript.write_text('\n'.join(json.dumps(e) for e in (
@@ -926,7 +930,7 @@ class EvidenceOutput(unittest.TestCase):
                     'toolName': 'apply_patch', 'arguments': {'input': '*** Update File: src/a.py\r\n@@\r\n'}}},
             )), encoding='utf-8')
             result = subprocess.run(
-                [sys.executable, str(REPO / 'core/hooks/enforce_memory_graph.py'), 'evidence', *flags],
+                [sys.executable, str(REPO / 'core/hooks/enforce_memory_graph.py'), mode, *flags],
                 input=json.dumps({'transcript_path': str(transcript)}), capture_output=True, encoding='utf-8')
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
@@ -940,6 +944,13 @@ class EvidenceOutput(unittest.TestCase):
 
     def test_claude_and_codex_output_is_unchanged(self):
         self.assertEqual(set(self.decide()), {'decision', 'reason'})
+        self.assertEqual(set(self.decide(mode='stop')), {'decision', 'reason'})
+
+    def test_copilot_engram_stop_gets_the_decision_in_both_places(self):
+        out = self.decide('--copilot', mode='stop')
+        self.assertEqual((out['decision'], out['hookSpecificOutput']['hookEventName']), ('block', 'Stop'))
+        self.assertEqual(out['hookSpecificOutput']['decision'], 'block')
+        self.assertIn('Engram', out['hookSpecificOutput']['reason'])
 
 
 def load_hook(name):
