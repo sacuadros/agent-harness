@@ -156,12 +156,23 @@ for line in sys.stdin:
         if sys.argv[1] == 'hang': time.sleep(60)
         response = {'error': {'code': -1, 'message': 'secret_sentinel'}} if sys.argv[1] == 'error' else {'result': {'data': []}}
     elif request['method'] == 'initialize': response = {'result': {}}
+    elif request['method'] == 'config/read':
+        pathlib.Path(sys.argv[2]).write_text(json.dumps(methods))
+        if sys.argv[1] == 'hang_config': time.sleep(60)
+        response = {'result': {'config': {'approval_policy': 'on-request', 'approvals_reviewer': 'user',
+                                          'other_config': 'secret_sentinel'}}}
     else: continue
     print(json.dumps({'id': request['id'], **response}), flush=True)
 ''', encoding='utf-8')
         command = lambda mode: [sys.executable, '-u', str(server), mode, str(methods)]
         self.assertEqual(query(self.home, command=command('ok')), {'data': []})
         self.assertEqual(json.loads(methods.read_text()), ['initialize', 'initialized', 'hooks/list'])
+        self.assertEqual(query(self.home, command=command('ok'), check_approvals=True),
+                         {'data': [], 'approval': {'approval_policy': 'on-request', 'approvals_reviewer': 'user'}})
+        self.assertEqual(json.loads(methods.read_text()), ['initialize', 'initialized', 'hooks/list', 'config/read'])
+        self.assertEqual(query(self.home, command=command('hang_config'), timeout=2, check_approvals=True),
+                         {'data': []})
+        self.assertEqual(json.loads(methods.read_text()), ['initialize', 'initialized', 'hooks/list', 'config/read'])
         with self.assertRaises(RuntimeError) as failed:
             query(self.home, command=command('error'))
         self.assertNotIn('secret_sentinel', str(failed.exception))
@@ -194,8 +205,8 @@ for line in sys.stdin:
                      'matcher': entry.get('matcher'), 'command': handler['command'],
                      'enabled': True, 'trustStatus': 'trusted'}
                     for event, entries in desired.items() for entry in entries for handler in entry['hooks']]
-        reply = {'data': [{'hooks': metadata, 'warnings': [], 'errors': []}]}
-        with mock.patch.dict(diagnose.__globals__, {'query_codex_hooks': lambda home: reply}), \
+        reply = {'data': [{'hooks': metadata, 'warnings': [], 'errors': []}], 'approval': {}}
+        with mock.patch.dict(diagnose.__globals__, {'query_codex_hooks': lambda home, **kwargs: reply}), \
                 mock.patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, '{"zstd": false}', '')):
             issues = diagnose(self.home)
         self.assertTrue(any('engram' in issue for issue in issues))
@@ -203,11 +214,51 @@ for line in sys.stdin:
         self.assertTrue(any('compressed' in issue for issue in issues))
         (root / 'config.toml').write_text('[mcp_servers.engram]\ncommand = "engram"\n'
             'env_vars = ["ENGRAM_CLOUD_TOKEN"]\n[mcp_servers.codegraph]\ncommand = "codegraph"\n'
+            '[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n'
             '[shell_environment_policy]\nexclude = ["ENGRAM_CLOUD_TOKEN"]\n', encoding='utf-8')
-        with mock.patch.dict(diagnose.__globals__, {'query_codex_hooks': lambda home: reply}), \
+        with mock.patch.dict(diagnose.__globals__, {'query_codex_hooks': lambda home, **kwargs: reply}), \
                 mock.patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, '{"zstd": true}', '')), \
                 mock.patch('shutil.which', return_value=sys.executable):
             self.assertEqual(diagnose(self.home), [])
+
+    def test_runtime_reports_settings_that_prevent_human_rule_approval(self):
+        diagnose = runpy.run_path(str(HARNESS))['codex_runtime_findings']
+        hooks = self.home / '.codex' / 'hooks.json'
+        hooks.parent.mkdir()
+        hooks.write_text('{"hooks": {}}', encoding='utf-8')
+        cases = [
+            ({'approvals_reviewer': 'auto_review'}, 'Codex commit approval requires the user reviewer'),
+            ({'approval_policy': 'never'}, 'Codex command rule prompts are disabled'),
+            ({'approval_policy': {'granular': {'rules': False}}}, 'Codex command rule prompts are disabled'),
+            ({'approval_policy': {'granular': {'rules': True}}, 'approvals_reviewer': 'user'}, None),
+            (None, 'Codex approval settings unverified'),
+        ]
+        for approval, expected in cases:
+            with self.subTest(approval=approval):
+                reply = {'data': [{'hooks': []}], 'approval': approval}
+                with mock.patch.dict(diagnose.__globals__, {'query_codex_hooks': lambda home, **kwargs: reply}):
+                    findings = [issue for issue in diagnose(self.home)
+                                if issue.startswith(('Codex commit approval', 'Codex command rule', 'Codex approval'))]
+                self.assertEqual(findings, [expected] if expected else [])
+
+    def test_runtime_requires_an_enabled_context7_registration(self):
+        diagnose = runpy.run_path(str(HARNESS))['codex_runtime_findings']
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir()
+        entry = '[mcp_servers.docs]\nurl = "https://mcp.context7.com/mcp"\n'
+        for source, expected in (
+            ('', 'context7 MCP is not registered for Codex'),
+            (entry + 'enabled = false\n', 'Codex MCP disabled: Context7'),
+            (entry, None),
+        ):
+            with self.subTest(expected=expected):
+                config.write_text(source, encoding='utf-8')
+                findings = [issue for issue in diagnose(self.home) if 'context7' in issue.lower()]
+                if expected:
+                    self.assertEqual(len(findings), 1)
+                    self.assertIn(expected, findings[0])
+                else:
+                    self.assertEqual(findings, [])
 
     def test_runtime_rejects_missing_windows_mcp_launcher(self):
         ns = runpy.run_path(str(HARNESS))
@@ -216,7 +267,7 @@ for line in sys.stdin:
         root.mkdir()
         (root / 'config.toml').write_text('[mcp_servers.codegraph]\ncommand = "cmd.exe"\n'
             'args = ["/d", "/c", "C:/removed/codegraph.cmd", "serve", "--mcp"]\n', encoding='utf-8')
-        with mock.patch.dict(diagnose.__globals__, {'untrusted_codex_hooks': lambda home: []}), \
+        with mock.patch.dict(diagnose.__globals__, {'untrusted_codex_hooks': lambda home, **kwargs: []}), \
                 mock.patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, '{"zstd": true}', '')), \
                 mock.patch('shutil.which', side_effect=lambda command: sys.executable if command == 'cmd.exe' else None):
             issues = diagnose(self.home)

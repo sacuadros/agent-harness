@@ -168,7 +168,9 @@ This mode installs self-contained hooks under `~/.codex/hooks`, the Codex instru
 
 `check --agent codex` verifies files, config, and hook selftests. `doctor --agent codex` also checks hook activation and integration prerequisites through the local Codex CLI's `hooks/list` API, reports new, modified, disabled, or missing hooks, and exits with status 1 when readiness cannot be verified. It does not start model turns, run hooks, or change trust; installing hooks never grants trust automatically. Review the installed hooks in Codex under Settings > Hooks or with `/hooks`. An older CLI without this API is reported as unverified.
 
-If the machine has compressed Codex transcripts, runtime checks also require Python 3.14 or newer for the hook interpreter. The MCP checks validate registration and executable availability; they do not authenticate to remote MCP servers or test Engram cloud replication.
+The managed Codex rules request approval for plain `git commit` shell commands. Codex routes that request according to the active approval settings. The dedicated doctor checks the local CLI configuration and flags disabled rule prompts or automatic review. To route command prompts to a person, use the user reviewer with rule approvals enabled in the active session. An automatic review does not replace the explicit user authorization required by Slice Flow.
+
+If the machine has compressed Codex transcripts, runtime checks also require Python 3.14 or newer for the hook interpreter. The MCP checks report missing or disabled Context7 registrations in the user Codex config, and check registration and executable availability for Engram and CodeGraph; they do not authenticate to remote MCP servers or test Engram cloud replication.
 
 ## Updating
 
@@ -237,6 +239,10 @@ bin/harness install
 ```
 
 CI runs the hook selftests and the full suite on macOS, Linux, and Windows.
+
+On Linux, CI also runs `python3 -m tests.codex_smoke` with a pinned Codex CLI. The smoke test installs into a temporary home, checks hook discovery and trust status through `hooks/list`, and evaluates the installed command rules.
+
+For a Desktop check after installation, review the hooks under Settings > Hooks. In a fresh chat in a disposable CodeGraph-indexed repo, a read-only shell search before the first CodeGraph query should be blocked with the CodeGraph reminder.
 
 ## License
 

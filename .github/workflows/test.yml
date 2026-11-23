@@ -25,3 +25,6 @@ jobs:
           python core/hooks/enforce_memory_graph.py selftest
       - name: Test suite
         run: python -m unittest discover -s tests -v
+      - name: Codex CLI smoke test
+        if: matrix.os == 'ubuntu-latest'
+        run: npm exec --yes --ignore-scripts --package=@openai/codex@0.163.0 -- python -B -m tests.codex_smoke

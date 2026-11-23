@@ -29,6 +29,7 @@ import threading
 import http.client
 import urllib.request
 from datetime import datetime
+from time import monotonic
 import tomllib
 from pathlib import Path
 
@@ -376,6 +377,19 @@ def has_context7(servers):
     """Any entry named for Context7 or served from context7.com counts, whatever its transport."""
     return any('context7' in name.lower() or isinstance(s, dict) and 'context7.com' in str(s.get('url', ''))
                for name, s in (servers if isinstance(servers, dict) else {}).items())
+
+
+def codex_context7_finding(config, servers):
+    entries = servers.items() if isinstance(servers, dict) else ()
+    registered = [server for name, server in entries
+                  if isinstance(server, dict) and (server.get('command') or server.get('url'))
+                  and has_context7({name: server})]
+    if any(server.get('enabled') is not False for server in registered):
+        return None
+    if registered:
+        return f'Codex MCP disabled: Context7; review the existing registration in {config}'
+    return (f'context7 MCP is not registered for Codex; verify the configured server in Codex or add '
+            f'[mcp_servers.context7] with url = "https://mcp.context7.com/mcp" to {config}')
 
 
 def copilot_has_context7(home, servers):
@@ -1039,8 +1053,8 @@ def marketplace_version(manifest):
     return None
 
 
-def query_codex_hooks(home, command=None, timeout=12):
-    """Read effective hooks through Codex's local API. Never start turns or change trust."""
+def query_codex_hooks(home, command=None, timeout=12, *, check_approvals=False):
+    """Read hooks and optional approval settings without starting turns or changing trust."""
     command = command or cli_argv('codex', 'app-server', '--stdio')
     if not command:
         raise FileNotFoundError('Codex CLI unavailable')
@@ -1048,7 +1062,7 @@ def query_codex_hooks(home, command=None, timeout=12):
            'HOME': str(home), 'USERPROFILE': str(home)}
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace', env=env)
-    replies = queue.Queue(maxsize=1)
+    replies = queue.Queue(maxsize=2)
 
     def exchange():
         try:
@@ -1072,12 +1086,19 @@ def query_codex_hooks(home, command=None, timeout=12):
                 'clientInfo': {'name': 'agent_harness', 'version': '0.1'}}})
             receive(0)
             send({'method': 'initialized'})
-            send({'id': 1, 'method': 'hooks/list', 'params': {'cwds': [str(Path.cwd())]}})
+            cwd = str(Path.cwd())
+            send({'id': 1, 'method': 'hooks/list', 'params': {'cwds': [cwd]}})
             replies.put((True, receive(1)))
-        except Exception as error:
-            replies.put((False, error))
+            if check_approvals:
+                send({'id': 2, 'method': 'config/read', 'params': {'cwd': cwd, 'includeLayers': False}})
+                config = receive(2)['config']
+                approvals = {key: config.get(key) for key in ('approval_policy', 'approvals_reviewer')}
+                replies.put((True, approvals))
+        except Exception:
+            replies.put((False, None))
 
     worker = threading.Thread(target=exchange, daemon=True)
+    deadline = monotonic() + timeout
     worker.start()
     try:
         try:
@@ -1086,6 +1107,13 @@ def query_codex_hooks(home, command=None, timeout=12):
             raise TimeoutError('Codex hook API timed out') from None
         if not success:
             raise RuntimeError('Codex hook API could not be verified') from None
+        if check_approvals:
+            try:
+                success, approvals = replies.get(timeout=max(0, deadline - monotonic()))
+            except queue.Empty:
+                success = False
+            if success:
+                result['approval'] = approvals
         return result
     finally:
         try:
@@ -1133,6 +1161,8 @@ def codex_runtime_findings(home):
     config, hooks = home / CODEX_CONFIG, home / HOOK_CONFIGS['codex']
     try:
         data = tomllib.loads(config.read_text(encoding='utf-8')) if config.is_file() else {}
+        if context7 := codex_context7_finding(config, data.get('mcp_servers', {})):
+            findings.append(context7)
         for name in ('engram', 'codegraph'):
             entry = data.get('mcp_servers', {}).get(name, {})
             if not (entry.get('command') or entry.get('url')):
@@ -1163,11 +1193,22 @@ def codex_runtime_findings(home):
             findings.append('Codex compressed transcript checks unavailable; configure Python 3.14 or newer')
     except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
         findings.append('Codex configuration or hook Python could not be verified; inspect config and interpreter')
-    findings += untrusted_codex_hooks(home)
+    findings += untrusted_codex_hooks(home, check_approvals=True)
     return findings
 
 
-def untrusted_codex_hooks(home):
+def codex_approval_finding(config):
+    if not isinstance(config, dict):
+        return 'Codex approval settings unverified'
+    policy = config.get('approval_policy')
+    if policy == 'never' or isinstance(policy, dict) and policy.get('granular', {}).get('rules') is not True:
+        return 'Codex command rule prompts are disabled'
+    if config.get('approvals_reviewer') not in (None, 'user'):
+        return 'Codex commit approval requires the user reviewer'
+    return None
+
+
+def untrusted_codex_hooks(home, *, check_approvals=False):
     """Effective hook readiness from Codex, including modified/disabled/unknown states."""
     hooks = home / HOOK_CONFIGS['codex']
     if not hooks.is_file():
@@ -1176,7 +1217,9 @@ def untrusted_codex_hooks(home):
     try:
         installed = json.loads(hooks.read_text(encoding='utf-8')).get('hooks', {})
         expected = {event: [entry for entry in entries if hook_key(entry)] for event, entries in installed.items()}
-        reported = query_codex_hooks(home)
+        reported = query_codex_hooks(home, check_approvals=check_approvals)
+        if check_approvals and (approval := codex_approval_finding(reported.get('approval'))):
+            findings.append(approval)
         items = reported.get('data')
         if not isinstance(items, list) or not items:
             raise ValueError('missing hook API data')
@@ -1253,9 +1296,8 @@ def doctor(home, agent=None):
         findings += untrusted_codex_hooks(home)
         try:
             servers = tomllib.loads(codex.read_text(encoding='utf-8')).get('mcp_servers', {}) if codex.is_file() else {}
-            if not has_context7(servers):
-                findings.append(f'context7 MCP is not registered for Codex, so the documentation rule cannot be followed '
-                                f'(add [mcp_servers.context7] with url = "https://mcp.context7.com/mcp" to {codex})')
+            if context7 := codex_context7_finding(codex, servers):
+                findings.append(context7)
         except ValueError:
             pass  # unparseable: `check` reports it
     if 'copilot' in agents:
