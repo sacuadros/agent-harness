@@ -868,6 +868,261 @@ class Copilot(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
 
+    def test_copilot_config_edits_are_backed_up_before_the_edit(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        command = next(h[shell_key] for h in hooks['hooks']['PreToolUse']
+                       if 'harness_guards.py backup' in h[shell_key])
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+        paths = ('.copilot/copilot-instructions.md', '.copilot/mcp-config.json',
+                 '.copilot/hooks/agent-harness.json', '.copilot/agents/example.agent.md',
+                 'Library/Application Support/Code/User/prompts/example.instructions.md',
+                 '.config/Code/User/prompts/example.instructions.md',
+                 'AppData/Roaming/Code/User/prompts/example.instructions.md')
+        for i, rel in enumerate(paths):
+            with self.subTest(path=rel):
+                path = self.home / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                original = f'original {i}\n'
+                path.write_text(original, encoding='utf-8')
+                event = {'session_id': 'example', 'tool_name': 'Edit', 'tool_input': {'file_path': str(path)}}
+                result = subprocess.run([*shell, command], input=json.dumps(event), capture_output=True,
+                                        encoding='utf-8', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(result.stdout, f'No backup was reported for {rel}')
+                self.assertIn('systemMessage', json.loads(result.stdout))
+                backups = list((self.home / '.claude/backups').iterdir())
+                self.assertIn(original, [p.read_text(encoding='utf-8') for p in backups])
+
+    def test_backup_covers_vscode_settings_without_copying_credentials_or_runtime(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        command = next(h[shell_key] for h in hooks['hooks']['PreToolUse']
+                       if 'harness_guards.py backup' in h[shell_key])
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+        configs = ('.claude/settings.json', '.codex/config.toml',
+                   'Library/Application Support/Code/User/settings.json',
+                   'Library/Application Support/Code/User/mcp.json',
+                   '.config/Code/User/settings.json', '.config/Code/User/mcp.json',
+                   'AppData/Roaming/Code/User/settings.json', 'AppData/Roaming/Code/User/mcp.json')
+        excluded = ('.claude/.credentials.json', '.codex/auth.json', '.copilot/auth.json',
+                    '.copilot/session-state/sessions.json',
+                    'Library/Application Support/Code/User/globalStorage/state.json',
+                    '.config/Code/User/workspaceStorage/state.json')
+        for i, rel in enumerate((*configs, *excluded)):
+            with self.subTest(path=rel):
+                path = self.home / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                original = f'synthetic {i}\n'
+                path.write_text(original, encoding='utf-8')
+                event = {'session_id': 'example', 'tool_name': 'Edit', 'tool_input': {'file_path': str(path)}}
+                result = subprocess.run([*shell, command], input=json.dumps(event), capture_output=True,
+                                        encoding='utf-8', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if rel in configs:
+                    self.assertIn('systemMessage', json.loads(result.stdout))
+                    path.write_text('changed\n', encoding='utf-8')
+                    repeat = subprocess.run([*shell, command], input=json.dumps(event), capture_output=True,
+                                            encoding='utf-8', env=env)
+                    self.assertEqual((repeat.returncode, repeat.stdout), (0, ''), repeat.stderr)
+                    self.assertIn(original, [p.read_text(encoding='utf-8')
+                                             for p in (self.home / '.claude/backups').iterdir()])
+                else:
+                    self.assertEqual(result.stdout, '')
+
+    def test_backup_failure_denies_the_copilot_edit(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        command = next(h[shell_key] for h in hooks['hooks']['PreToolUse']
+                       if 'harness_guards.py backup' in h[shell_key])
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+        config = self.home / '.copilot/settings.json'
+        config.write_text('original\n', encoding='utf-8')
+        (self.home / '.claude/backups').write_text('not a directory\n', encoding='utf-8')
+        event = {'session_id': 'example', 'tool_name': 'Edit', 'tool_input': {'file_path': str(config)}}
+        for payload in (json.dumps(event), 'not json'):
+            with self.subTest(payload=payload):
+                result = subprocess.run([*shell, command], input=payload, capture_output=True,
+                                        encoding='utf-8', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['permissionDecision'], 'deny')
+
+    def test_codegraph_blocks_search_using_documented_copilot_event(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        repo = self.home / 'indexed'
+        (repo / '.git').mkdir(parents=True)
+        (repo / '.codegraph').mkdir()
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        command = next(h[shell_key] for h in hooks['hooks']['PreToolUse']
+                       if 'enforce_memory_graph.py pretool' in h[shell_key])
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+        for tool, args in (('Grep', {'pattern': 'x'}), ('Glob', {'pattern': '*.py'}),
+                           ('Bash', {'command': 'rg x'})):
+            with self.subTest(tool=tool):
+                event = {'hook_event_name': 'PreToolUse', 'session_id': 'example',
+                         'cwd': str(repo), 'tool_name': tool, 'tool_input': args}
+                result = subprocess.run([*shell, command], input=json.dumps(event), capture_output=True,
+                                        encoding='utf-8', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                out = json.loads(result.stdout)
+                self.assertEqual(out['permissionDecision'], 'deny')
+                self.assertEqual(out['hookSpecificOutput']['permissionDecision'], 'deny')
+
+    def test_codegraph_use_is_confirmed_per_session_and_cleared_on_end(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        repo = self.home / 'indexed'
+        (repo / '.git').mkdir(parents=True)
+        (repo / '.codegraph').mkdir()
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        events = hooks['hooks']
+        commands = {}
+        for event, mode in (('PreToolUse', 'pretool'), ('PostToolUse', 'posttool'),
+                            ('SessionEnd', 'sessionend')):
+            commands[event] = next((h[shell_key] for h in events.get(event, [])
+                                    if f'enforce_memory_graph.py {mode}' in h[shell_key]), None)
+            self.assertIsNotNone(commands[event], event)
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+
+        def invoke(event, payload):
+            result = subprocess.run([*shell, commands[event]], input=json.dumps(payload), capture_output=True,
+                                    encoding='utf-8', env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout) if result.stdout else None
+
+        search = {'hook_event_name': 'PreToolUse', 'session_id': 'example', 'cwd': str(repo),
+                  'tool_name': 'Grep', 'tool_input': {'pattern': 'x'}}
+        codegraph = {'hook_event_name': 'PostToolUse', 'session_id': 'example', 'cwd': str(repo),
+                     'tool_name': 'Bash', 'tool_input': {'command': 'codegraph explore x'},
+                     'tool_result': {'result_type': 'failure', 'text_result_for_llm': ''}}
+        invoke('PostToolUse', codegraph)
+        self.assertEqual(invoke('PreToolUse', search)['permissionDecision'], 'deny')
+        codegraph['tool_result']['result_type'] = 'success'
+        invoke('PostToolUse', codegraph)
+        self.assertIsNone(invoke('PreToolUse', search))
+        self.assertEqual(invoke('PreToolUse', {**search, 'session_id': 'other'})['permissionDecision'], 'deny')
+        invoke('SessionEnd', {'hook_event_name': 'SessionEnd', 'session_id': 'example', 'cwd': str(repo)})
+        self.assertEqual(invoke('PreToolUse', search)['permissionDecision'], 'deny')
+
+    def test_codegraph_errors_are_visible_and_other_agents_keep_transcript_behavior(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        repo = self.home / 'indexed'
+        (repo / '.git').mkdir(parents=True)
+        (repo / '.codegraph').mkdir()
+        plain = self.home / 'plain'
+        (plain / '.git').mkdir(parents=True)
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+
+        def installed(event, mode, payload):
+            command = next(h[shell_key] for h in hooks['hooks'][event]
+                           if f'enforce_memory_graph.py {mode}' in h[shell_key])
+            result = subprocess.run([*shell, command], input=payload, capture_output=True,
+                                    encoding='utf-8', env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout) if result.stdout else None
+
+        search = {'hook_event_name': 'PreToolUse', 'session_id': 'example', 'cwd': str(repo),
+                  'tool_name': 'Grep', 'tool_input': {'pattern': 'x'}}
+        self.assertIsNone(installed('PreToolUse', 'pretool', json.dumps({**search, 'cwd': str(plain)})))
+        for payload in ('not json', json.dumps({**search, 'session_id': ''})):
+            with self.subTest(payload=payload):
+                result = installed('PreToolUse', 'pretool', payload)
+                self.assertEqual(result['permissionDecision'], 'deny')
+                self.assertTrue(result['permissionDecisionReason'])
+
+        (self.home / '.agent-harness/state').write_text('not a directory\n', encoding='utf-8')
+        codegraph = {'hook_event_name': 'PostToolUse', 'session_id': 'example', 'cwd': str(repo),
+                     'tool_name': 'Bash', 'tool_input': {'command': 'codegraph explore x'},
+                     'tool_result': {'result_type': 'success', 'text_result_for_llm': ''}}
+        result = installed('PostToolUse', 'posttool', json.dumps(codegraph))
+        self.assertTrue(result['additionalContext'])
+        self.assertEqual(installed('PreToolUse', 'pretool', json.dumps(search))['permissionDecision'], 'deny')
+
+        transcript = self.home / 'transcript.jsonl'
+        transcript.write_text('{"type":"user","message":{"content":"search"}}\n', encoding='utf-8')
+        guard = self.home / '.claude/hooks/enforce_memory_graph.py'
+        event = {**search, 'transcript_path': str(transcript)}
+        for flag in ([], ['--codex']):
+            with self.subTest(agent=flag):
+                result = subprocess.run([sys.executable, str(guard), 'pretool', *flag], input=json.dumps(event),
+                                        capture_output=True, encoding='utf-8', env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
+        transcript.write_text(json.dumps({'type': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'name': 'mcp__codegraph__explore', 'input': {}}]}}) + '\n', encoding='utf-8')
+        result = subprocess.run([sys.executable, str(guard), 'pretool'], input=json.dumps(event),
+                                capture_output=True, encoding='utf-8', env=env)
+        self.assertEqual((result.returncode, result.stdout), (0, ''), result.stderr)
+
+    def test_copilot_does_not_treat_a_transcript_start_as_success(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        repo = self.home / 'indexed'
+        (repo / '.git').mkdir(parents=True)
+        (repo / '.codegraph').mkdir()
+        transcript = self.home / 'transcript.jsonl'
+        transcript.write_text(json.dumps({'type': 'tool.execution_start', 'data': {
+            'toolName': 'run_in_terminal', 'arguments': {'command': 'codegraph explore x'}}}) + '\n',
+            encoding='utf-8')
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        command = next(h[shell_key] for h in hooks['hooks']['PreToolUse']
+                       if 'enforce_memory_graph.py pretool' in h[shell_key])
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+        event = {'hook_event_name': 'PreToolUse', 'session_id': 'example', 'cwd': str(repo),
+                 'tool_name': 'Grep', 'tool_input': {'pattern': 'x'}, 'transcript_path': str(transcript)}
+        result = subprocess.run([*shell, command], input=json.dumps(event), capture_output=True,
+                                encoding='utf-8', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['permissionDecision'], 'deny')
+
+    def test_codegraph_nonzero_shell_exit_does_not_unlock_search(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        repo = self.home / 'indexed'
+        (repo / '.git').mkdir(parents=True)
+        (repo / '.codegraph').mkdir()
+        hooks = json.loads((self.home / '.copilot/hooks/agent-harness.json').read_text(encoding='utf-8'))
+        shell_key = 'powershell' if os.name == 'nt' else 'bash'
+        shell = ['powershell', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
+        env = {**os.environ, 'HOME': str(self.home), 'USERPROFILE': str(self.home)}
+        post = next(h[shell_key] for h in hooks['hooks']['PostToolUse']
+                    if 'enforce_memory_graph.py posttool' in h[shell_key])
+        pre = next(h[shell_key] for h in hooks['hooks']['PreToolUse']
+                   if 'enforce_memory_graph.py pretool' in h[shell_key])
+        event = {'hook_event_name': 'PostToolUse', 'session_id': 'example', 'cwd': str(repo),
+                 'tool_name': 'Bash', 'tool_input': {'command': 'codegraph query --bad-flag'},
+                 'tool_result': {'result_type': 'success', 'text_result_for_llm':
+                                 'error: unknown option\n<shellId: 124 completed with exit code 1>'}}
+        result = subprocess.run([*shell, post], input=json.dumps(event), capture_output=True,
+                                encoding='utf-8', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        search = {'hook_event_name': 'PreToolUse', 'session_id': 'example', 'cwd': str(repo),
+                  'tool_name': 'Grep', 'tool_input': {'pattern': 'x'}}
+        result = subprocess.run([*shell, pre], input=json.dumps(search), capture_output=True,
+                                encoding='utf-8', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['permissionDecision'], 'deny')
+
     def test_render_has_every_section_and_its_own_orchestration(self):
         text = harness('render', 'copilot')
         self.assertEqual(len(re.findall(r'<!-- copilot-native:[a-z-]+ -->', text)), 10)
@@ -1164,6 +1419,49 @@ class EngramMcp(unittest.TestCase):
                                        encoding='utf-8', newline='\n')
         self.assertNotIn('context7', self.copilot_servers({'chrome-devtools': {'type': 'local', 'command': 'npx'}}))
 
+    def test_context7_mentions_outside_vscode_servers_do_not_count(self):
+        user = self.home / 'Library/Application Support/Code/User'
+        user.mkdir(parents=True)
+        profile = user / 'mcp.json'
+        native = self.home / '.copilot/mcp-config.json'
+        native.parent.mkdir()
+        text = ('{\n  // context7 is not configured here\n'
+                '  "inputs": [{"id": "context7-key"}],\n'
+                '  "servers": {"other": {"url": "https://example.test/a//b",},},\n}\n')
+        profile.write_text(text, encoding='utf-8')
+        native.write_text('{"mcpServers": {}}', encoding='utf-8')
+        self.assertIn('context7 MCP is not registered for Copilot', self.run_harness('doctor'))
+        self.assertEqual(self.copilot_servers()['context7'], self.CONTEXT7)
+        self.assertEqual(profile.read_text(encoding='utf-8'), text)
+
+        profile.write_text('{"servers": {"docs": {"url": "https://mcp.context7.com/mcp",},},}\n',
+                           encoding='utf-8')
+        self.assertNotIn('context7', self.copilot_servers({'other': {'command': 'example'}}))
+
+    def test_invalid_vscode_mcp_profile_is_reported_without_installing(self):
+        user = self.home / 'Library/Application Support/Code/User'
+        user.mkdir(parents=True)
+        profile = user / 'mcp.json'
+        native = self.home / '.copilot/mcp-config.json'
+        native.parent.mkdir()
+        original_native = json.dumps({'mcpServers': {'context7': self.CONTEXT7}})
+        native.write_text(original_native, encoding='utf-8')
+        for text in ('{"servers": {"x": {"token": "synthetic-secret-sentinel"}},',
+                     '{"servers": []}'):
+            with self.subTest(profile=text):
+                profile.write_text(text, encoding='utf-8')
+                for args in (('install', '--agents', 'copilot'), ('check',), ('doctor',)):
+                    result = subprocess.run([sys.executable, str(HARNESS), *args, '--home', str(self.home)],
+                                            capture_output=True, encoding='utf-8', env=self.env)
+                    output = result.stdout + result.stderr
+                    self.assertIn('invalid VS Code MCP configuration', output)
+                    self.assertNotIn('synthetic-secret-sentinel', output)
+                    if args[0] != 'doctor':
+                        self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(profile.read_text(encoding='utf-8'), text)
+                self.assertEqual(native.read_text(encoding='utf-8'), original_native)
+                self.assertFalse((self.home / '.copilot/hooks').exists())
+
     def test_copilot_gets_context7_next_to_its_other_servers(self):
         chrome = {'type': 'local', 'command': 'npx', 'args': ['-y', 'chrome-devtools-mcp@latest'], 'tools': ['*']}
         servers = self.copilot_servers({'chrome-devtools': chrome})
@@ -1214,6 +1512,15 @@ class Doctor(unittest.TestCase):
                                 capture_output=True, encoding='utf-8', env={**self.env, **env})
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
+
+    def test_copilot_hook_execution_is_reported_as_unverified(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        checked = run('check', '--home', str(self.home))
+        self.assertEqual((checked.returncode, checked.stdout.strip()), (0, 'ok'), checked.stdout)
+        out = self.doctor()
+        self.assertIn('Copilot hook execution unverified', out)
+        self.assertIn('disposable Copilot session', out)
 
     @unittest.skipIf(os.name == 'nt', 'the fake engram is a shell script')
     def test_engram_cloud_status(self):

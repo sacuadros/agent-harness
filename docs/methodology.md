@@ -145,7 +145,7 @@ Claude Code and Codex already had two hook rules: save Engram memory after subst
 
 ### How
 
-Two modes of `core/hooks/enforce_memory_graph.py`, called with `--copilot`. Both read the session transcript and reuse the Claude Code and Codex logic; the Copilot reader only maps its tool calls to the names that logic already knows.
+Copilot's `PreToolUse` payload does not include a transcript path. The hook therefore uses the documented `PostToolUse` and `SessionEnd` events to track whether CodeGraph ran in the current session. Claude Code and Codex keep their existing transcript-based check.
 
 ```mermaid
 flowchart TD
@@ -165,6 +165,11 @@ flowchart TD
         P3 -- yes --> PZ
         P3 -- no --> P4[Deny: query CodeGraph first]
     end
+    subgraph state [Copilot session state]
+        T1[CodeGraph PostToolUse succeeds] --> T2[Write session marker]
+        T2 --> P3
+        E1[SessionEnd] --> E2[Remove session marker]
+    end
 ```
 
 What counts as an Engram write: `mcp_engram_mem_save`, `mcp_engram_mem_update` and `mcp_engram_mem_session_summary`. Engram reads, `manage_todo_list`, `tool_search`, `task_complete`, `vscode_askQuestions`, `memory` and subagent calls are not work.
@@ -176,8 +181,11 @@ What counts as a search: `grep_search`, `file_search`, `semantic_search`, and `r
 ### Limits
 
 - VS Code only. The Copilot CLI sends its events in another shape; these hooks ignore them and allow everything.
-- The hooks have not been seen firing in a live VS Code chat, where agent hooks are in preview. They were checked against real Copilot transcripts and the hook's own tests.
+- `doctor` reports Copilot hook execution as unverified. Verify it by selecting Copilot in VS Code, running a disposable session that uses a harmless tool, and checking the [Agent Debug Logs](https://code.visualstudio.com/docs/agents/agent-troubleshooting/chat-debug-view#_logs-view). Hook configuration and synthetic payload tests do not prove live execution.
+- Copilot records CodeGraph use after a successful `PostToolUse` result. For shell tools, it also rejects the nonzero exit suffix observed in the current runtime. The public hook schema does not guarantee that suffix, so other provider output formats remain unverified.
+- Copilot may run hooks for parallel tool calls concurrently. A search issued in the same batch as a CodeGraph command can be denied before the command records its completion.
 - The repo root comes from the event's `cwd`, or the hook's working directory if the event has none. If VS Code starts hooks outside the workspace, the CodeGraph rule does not fire. In a workspace with several folders, another folder's index can deny a search once; one `codegraph` command in the terminal lifts it. The command has to start the terminal line (`codegraph explore ...`, not `npx codegraph ...`).
+- CodeGraph indexes recognized source extensions, not every file in the repo. It excludes the extensionless `bin/harness`; use a targeted `rg` search and `view` range for that executable instead of assuming it appears in the graph.
 
 ## Context7 before library code
 

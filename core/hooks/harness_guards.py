@@ -18,7 +18,12 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
-CONFIG_ROOTS = [HOME / '.claude', HOME / '.codex', HOME / '.agents']
+VSCODE_ROOTS = [HOME / 'Library/Application Support/Code/User', HOME / '.config/Code/User',
+                HOME / 'AppData/Roaming/Code/User']
+CONFIG_ROOTS = [HOME / '.claude', HOME / '.codex', HOME / '.agents', HOME / '.copilot', *VSCODE_ROOTS]
+VSCODE_CONFIG = {'prompts', 'settings.json', 'mcp.json'}
+COPILOT_CONFIG = {'agents', 'skills', 'hooks', 'instructions', 'config.json', 'settings.json',
+                  'copilot-instructions.md', 'mcp-config.json'}
 RUNTIME_DIRS = {'projects', 'file-history', 'cache', 'sessions', 'debug', 'backups',
                 'shell-snapshots', 'paste-cache', 'session-env', 'todos', 'plugins',
                 'downloads', 'ide', 'statsig', 'telemetry', 'history.jsonl',
@@ -218,6 +223,13 @@ def config_path(path):
             rel = p.relative_to(root.resolve())
         except ValueError:
             continue
+        if root == HOME / '.copilot' and rel.parts and rel.parts[0] not in COPILOT_CONFIG:
+            continue
+        if root in VSCODE_ROOTS and rel.parts and rel.parts[0] not in VSCODE_CONFIG:
+            continue
+        if (root == HOME / '.claude' and rel == Path('.credentials.json')
+                or root == HOME / '.codex' and rel == Path('auth.json')):
+            continue
         if rel.parts and rel.parts[0] not in RUNTIME_DIRS:
             return root, rel
     return None
@@ -245,7 +257,7 @@ def backup(data, backup_dir=BACKUP_DIR, now=None):
         if not found or not Path(path).is_file():
             continue
         root, rel = found
-        stem = f'{root.name.lstrip(".")}__{"__".join(rel.parts)}'
+        stem = '__'.join((*root.relative_to(HOME).parts, *rel.parts)).lstrip('.')
         if any(backup_dir.glob(f'{stem}.{session}.*')):
             continue  # already backed up in this session
         backup_dir.mkdir(parents=True, exist_ok=True)

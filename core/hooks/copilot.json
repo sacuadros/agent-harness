@@ -9,12 +9,26 @@
       },
       {
         "type": "command",
-        "args": ["{claude_hooks}/harness_guards.py", "backup"],
+        "args": ["{claude_hooks}/harness_guards.py", "backup", "--copilot"],
         "timeoutSec": 5
       },
       {
         "type": "command",
         "args": ["{claude_hooks}/enforce_memory_graph.py", "pretool", "--copilot"],
+        "timeoutSec": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "args": ["{claude_hooks}/enforce_memory_graph.py", "posttool", "--copilot"],
+        "timeoutSec": 5
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "args": ["{claude_hooks}/enforce_memory_graph.py", "sessionend", "--copilot"],
         "timeoutSec": 5
       }
     ],

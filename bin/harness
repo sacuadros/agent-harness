@@ -392,11 +392,26 @@ def codex_context7_finding(config, servers):
             f'[mcp_servers.context7] with url = "https://mcp.context7.com/mcp" to {config}')
 
 
+def vscode_mcp_servers(home):
+    user = home / (vscode_user(home) or VSCODE_USER[0]) / 'mcp.json'
+    if not user.is_file():
+        return {}
+    try:
+        text = user.read_text(encoding='utf-8-sig')
+        text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\r\n]*|/\*[\s\S]*?\*/',
+                      lambda m: m[1] or ' ', text)
+        text = re.sub(r'("(?:\\.|[^"\\])*")|,(?=\s*[}\]])', lambda m: m[1] or '', text)
+        data = json.loads(text)
+        if not isinstance(data, dict) or not isinstance(data.get('servers', {}), dict):
+            raise ValueError('servers must be an object')
+        return data.get('servers', {})
+    except (OSError, ValueError) as error:
+        raise ValueError(f'invalid VS Code MCP configuration: {user} ({type(error).__name__})') from error
+
+
 def copilot_has_context7(home, servers):
     """Copilot gets Context7 from its own MCP file or from VS Code's user mcp.json."""
-    user = home / (vscode_user(home) or VSCODE_USER[0]) / 'mcp.json'
-    # ponytail: VS Code's mcp.json is JSONC, so a text match stands in for parsing it
-    return has_context7(servers) or user.is_file() and 'context7' in user.read_text(encoding='utf-8').lower()
+    return has_context7(servers) or has_context7(vscode_mcp_servers(home))
 
 
 def copilot_mcp(home):
@@ -715,6 +730,12 @@ def set_aside(home, rel, backup_dir):
 def install(home, dry_run=False, agent=None, agents=None):
     changed = False
     chosen = {agent} if agent else selected(home) if agents is None else agents
+    if 'copilot' in chosen:
+        try:
+            vscode_mcp_servers(home)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 1
     backup_dir = home / '.agent-harness' / 'backups' / backup_stamp()
     manifest = {'created': [], 'replaced': [], 'retired': []}
 
@@ -962,6 +983,11 @@ def check(home, agent=None, runtime=False):
                                     capture_output=True, encoding='utf-8', errors='replace', timeout=60)
             if result.returncode != 0:
                 problems.append(f'selftest failed: {script}')
+    if 'copilot' in agents:
+        try:
+            vscode_mcp_servers(home)
+        except ValueError as error:
+            problems.append(str(error))
     for rel, parse in CONFIGS.items():
         path = home / rel
         if wanted(rel, agents) and path.is_file():
@@ -1301,15 +1327,19 @@ def doctor(home, agent=None):
         except ValueError:
             pass  # unparseable: `check` reports it
     if 'copilot' in agents:
+        findings.append('Copilot hook execution unverified; start a disposable Copilot session '
+                        'and inspect the agent debug logs')
         mcp = home / COPILOT_MCP
         try:
+            vscode_mcp_servers(home)
             data = json.loads(mcp.read_text(encoding='utf-8')) if mcp.is_file() else {}
             servers = data.get('mcpServers') if isinstance(data, dict) else None  # another shape counts as no servers
             if not copilot_has_context7(home, servers):
                 findings.append(f'context7 MCP is not registered for Copilot, so the documentation rule cannot be followed '
                                 f'(run `bin/harness install`, or add it to {mcp})')
-        except ValueError:
-            pass  # unparseable: `check` reports it
+        except ValueError as error:
+            if str(error).startswith('invalid VS Code MCP configuration:'):
+                findings.append(str(error))
     if cg_update := codegraph_update():
         findings.append(f'codegraph update available: {cg_update} (npm install -g @colbymchenry/codegraph, '
                         'then `codegraph index` in each indexed repo)')
@@ -1386,7 +1416,7 @@ def main(argv=None):
             if not agents:
                 print('nothing selected, nothing installed')
                 return 0
-        install(args.home, args.dry_run, args.agent, agents)
+        return install(args.home, args.dry_run, args.agent, agents)
     elif args.command == 'uninstall':
         agents = set(args.agents.split(','))
         if unknown := sorted(agents - set(AGENTS)):

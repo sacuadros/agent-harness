@@ -28,6 +28,8 @@ A single source of rules, skills, subagents, and guard hooks for AI coding agent
 
 Some files are shared: every agent's guards run from `~/.claude/hooks`, and every agent except Claude Code reads the skills in `~/.agents/skills`.
 
+Copilot in VS Code currently receives `~/.agents/skills` through its default skill locations. Copilot CLI also discovers that folder unless `COPILOT_HOME` overrides it.
+
 ## What the harness enforces
 
 - **Slice Flow instead of upfront specs.** Work starts as a backlog of one-line vertical slices, each refined just in time (`story`) and built test by test (`pair`). The user approves the backlog once; the agent then builds every slice and stops only for open requirements or decisions, alarms, or approvals. Commits and pushes always wait for the user. Saying "pair" or "con pausas" slows it down.
@@ -80,6 +82,7 @@ On Windows, prefix every `bin/harness` command in this README with `py -3`.
 
 - **Codex** asks you to trust new hooks the first time it sees them. Approve them once in the Codex app. `bin/harness doctor` lists any harness hooks Codex has not trusted yet.
 - **The Claude app's Code tab** runs Claude Code on the same `~/.claude` (rules, skills, subagents, hooks, MCP servers), so one install covers both. The app ships its own Claude Code version, which may differ from the `claude` CLI that `doctor` checks.
+- **Copilot in VS Code** runs hooks in preview. `doctor` reports execution as unverified until you check a disposable Copilot session's agent debug logs. A configured hook file alone does not prove that VS Code ran it.
 
 ## Commands
 
@@ -87,7 +90,7 @@ On Windows, prefix every `bin/harness` command in this README with `py -3`.
 |---|---|
 | `bin/harness install` | Render and install the harness for the selected agents. `--dry-run` previews, `--choose` reopens the agent picker, `--agents claude,codex` skips it. |
 | `bin/harness check` | Exit with status 1 on drift, broken config, a failed hook selftest, or literal secrets. |
-| `bin/harness doctor` | Read-only report: outdated Claude Code, Engram, and CodeGraph; Engram MCP and cloud status; Codex hook trust; leftover files. |
+| `bin/harness doctor` | Read-only report: outdated Claude Code, Engram, and CodeGraph; Engram MCP and cloud status; Codex hook trust; Copilot hook execution status; leftover files. |
 | `bin/harness render <agent>` | Print the instructions rendered for one agent. |
 | `bin/harness restore <timestamp>` | Undo an install from its backup folder. |
 | `bin/harness uninstall --agents <list>` | Remove the harness from one or more agents. |

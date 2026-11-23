@@ -4,10 +4,12 @@
   evidence Stop hook: blocks once when a turn edited code and ran no command or subagent afterwards.
   pretool  PreToolUse hook (Grep|Glob|Bash): denies broad search in a CodeGraph-indexed
            repo until the session has queried CodeGraph at least once.
+  posttool / sessionend: record and clear Copilot's per-session CodeGraph use.
 
 Reads Claude Code transcripts and Codex rollouts (.jsonl or .jsonl.zst), so
 ~/.codex/hooks.json can call it too. Run with `selftest` to check the transcript logic.
-Fails open: any unexpected error allows the action."""
+Copilot pretool errors deny the action; other agents keep the existing fail-open behavior."""
+import hashlib
 import json
 import os
 import re
@@ -148,10 +150,45 @@ def codegraph_used(path):
     for e in entries(path):
         for t in tool_uses(e):
             name = t.get('name', '')
-            cmd = t.get('input', {}).get('command', '') if name in SHELLS else ''
-            if 'codegraph' in name or re.search(r'(?:^|[;&|\n]\s*)codegraph\s', cmd):
+            if codegraph_call(name, t.get('input', {})):
                 return True
     return False
+
+
+def codegraph_call(name, tool_input):
+    cmd = tool_input.get('command', '') if name in (*SHELLS, 'run_in_terminal') else ''
+    return 'codegraph' in name or bool(re.search(r'(?:^|[;&|\n]\s*)codegraph\s', cmd))
+
+
+def codegraph_marker(data):
+    session = data.get('session_id')
+    if not isinstance(session, str) or not session:
+        raise ValueError('missing session_id')
+    name = hashlib.sha256(session.encode('utf-8')).hexdigest()
+    return Path.home() / '.agent-harness' / 'state' / 'codegraph' / name
+
+
+def posttool_decision(data):
+    result = data.get('tool_result')
+    name = data.get('tool_name', '')
+    if not (isinstance(result, dict) and result.get('result_type') == 'success'
+            and codegraph_call(name, data.get('tool_input', {}))):
+        return
+    if name in (*SHELLS, 'run_in_terminal'):
+        text = result.get('text_result_for_llm')
+        if not isinstance(text, str):
+            raise ValueError('missing tool result')
+        # The SDK shell can report tool success when its command exited nonzero.
+        exit_code = re.search(r'<shellId: [^>\r\n]+ completed with exit code (-?\d+)>\s*$', text)
+        if exit_code and int(exit_code[1]) != 0:
+            return
+    marker = codegraph_marker(data)
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marker.touch(mode=0o600)
+
+
+def sessionend(data):
+    codegraph_marker(data).unlink(missing_ok=True)
 
 
 def indexed_root(cwd):
@@ -195,24 +232,28 @@ def evidence_decision(data):
         'funciona) o di en una línea por qué no aplica. No repitas la respuesta anterior.')}
 
 
-def pretool_decision(data):
+def pretool_decision(data, copilot=False):
     tool = data.get('tool_name')
     # VS Code Copilot: its terminal is a shell, and its three search tools are Grep/Glob.
-    copilot = tool == 'run_in_terminal' or tool in COPILOT_SEARCH
-    tool = 'Bash' if tool == 'run_in_terminal' else 'Grep' if copilot else tool
+    copilot_tool = tool == 'run_in_terminal' or tool in COPILOT_SEARCH
+    tool = 'Bash' if tool == 'run_in_terminal' else 'Grep' if copilot_tool else tool
     if tool in SHELLS and not SEARCH_CMD.match(data.get('tool_input', {}).get('command', '')):
         return None
     if tool not in ('Grep', 'Glob', *SHELLS) or not indexed_root(data.get('cwd') or '.'):
         return None
-    transcript = data.get('transcript_path') or ''
-    if not Path(transcript).is_file() or codegraph_used(transcript):
-        return None  # fail open when the transcript cannot be read
+    if copilot:
+        if codegraph_marker(data).is_file():
+            return None
+    else:
+        transcript = data.get('transcript_path') or ''
+        if not Path(transcript).is_file() or codegraph_used(transcript):
+            return None  # fail open when a Claude/Codex transcript cannot be read
     return {'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',
         'permissionDecisionReason': (
             'CodeGraph primero: este repo tiene índice .codegraph. '
-            + ('Corre `codegraph explore "<pregunta>"` en la terminal antes de buscar. ' if copilot else
+            + ('Corre `codegraph explore "<pregunta>"` en la terminal antes de buscar. ' if copilot_tool else
                'Usa codegraph_explore (o el CLI `codegraph explore/query`) antes de buscar con Grep/Glob/grep/find. ')
             + 'Después de una consulta a CodeGraph la búsqueda queda permitida.')}}
 
@@ -437,9 +478,31 @@ def main():
         return selftest()
     try:
         data = json.loads(sys.stdin.buffer.read())  # bytes: UTF-8 whatever the locale
-        result = {'stop': stop_decision, 'evidence': evidence_decision, 'pretool': pretool_decision}[mode](data)
-    except Exception:
-        return  # fail open: never wedge a session on a hook bug
+        if mode == 'pretool':
+            result = pretool_decision(data, copilot='--copilot' in sys.argv)
+        else:
+            result = {'stop': stop_decision, 'evidence': evidence_decision,
+                      'posttool': posttool_decision, 'sessionend': sessionend}[mode](data)
+    except Exception as error:
+        if '--copilot' not in sys.argv:
+            return  # preserve Claude/Codex fail-open behavior
+        if mode == 'pretool':
+            result = {'hookSpecificOutput': {
+                'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+                'permissionDecisionReason': f'No se pudo comprobar CodeGraph ({type(error).__name__}). '
+                                            'Revisa el hook del harness antes de continuar.'}}
+        elif mode == 'posttool':
+            result = {'additionalContext': f'No se pudo guardar el uso de CodeGraph ({type(error).__name__}). '
+                                           'Las búsquedas seguirán bloqueadas hasta resolver el hook.'}
+        elif mode == 'sessionend':
+            print(f'No se pudo limpiar el estado de CodeGraph ({type(error).__name__}).', file=sys.stderr)
+            return
+        else:
+            return
+    if result and '--copilot' in sys.argv and mode == 'pretool':
+        spec = result['hookSpecificOutput']
+        result = {**result, 'permissionDecision': spec['permissionDecision'],
+                  'permissionDecisionReason': spec['permissionDecisionReason']}
     if result and '--copilot' in sys.argv and mode in ('stop', 'evidence'):
         # VS Code's Copilot reads a Stop decision only inside hookSpecificOutput; Copilot CLI documents the top level.
         result = {**result, 'hookSpecificOutput': {'hookEventName': 'Stop', **result}}
