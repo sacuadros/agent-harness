@@ -1162,6 +1162,18 @@ class EngramMcp(unittest.TestCase):
     def test_copilot_mcp_file_is_created_with_context7(self):
         self.assertEqual(self.copilot_servers()['context7'], self.CONTEXT7)
 
+    def test_copilot_mcp_table_in_another_shape_does_not_break_install(self):
+        config = self.home / '.copilot' / 'mcp-config.json'
+        config.parent.mkdir()
+        config.write_text('{"mcpServers": null}', encoding='utf-8')  # an empty table is filled like a missing one
+        self.run_harness('install')
+        self.assertEqual(json.loads(config.read_text(encoding='utf-8'))['mcpServers']['context7'], self.CONTEXT7)
+        for odd in ('{"mcpServers": []}', '{"mcpServers": "x"}', '[]'):  # not a table: the user's to fix, left as written
+            config.write_text(odd, encoding='utf-8')
+            self.run_harness('install')
+            self.assertEqual(config.read_text(encoding='utf-8'), odd)
+            self.run_harness('doctor')
+
     def test_doctor_reports_a_missing_engram_mcp(self):
         self.assertIn('engram MCP is not registered for Claude Code', self.run_harness('doctor'))
         (self.home / '.claude.json').write_text('{"mcpServers": {"engram": {"type": "stdio"}}}', encoding='utf-8')

@@ -375,7 +375,7 @@ COPILOT_MCP = '.copilot/mcp-config.json'
 def has_context7(servers):
     """Any entry named for Context7 or served from context7.com counts, whatever its transport."""
     return any('context7' in name.lower() or isinstance(s, dict) and 'context7.com' in str(s.get('url', ''))
-               for name, s in (servers or {}).items())
+               for name, s in (servers if isinstance(servers, dict) else {}).items())
 
 
 def copilot_has_context7(home, servers):
@@ -389,7 +389,11 @@ def copilot_mcp(home):
     """Add Engram and Context7 (no API key needed) to Copilot's MCP servers when missing; None when there is nothing to add."""
     path, engram = home / COPILOT_MCP, shutil.which('engram')
     data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
-    servers = data.setdefault('mcpServers', {})
+    if isinstance(data, dict) and data.get('mcpServers') is None:
+        data['mcpServers'] = {}  # a missing or null table is filled like an empty one
+    servers = data.get('mcpServers') if isinstance(data, dict) else None
+    if not isinstance(servers, dict):
+        return None  # a table in another shape is the user's to fix
     add = {}  # an entry of the user's own stays as written
     if 'engram' not in servers and engram:
         add['engram'] = {'type': 'local', 'command': engram, 'args': ['mcp', '--tools=agent'], 'tools': ['*']}
@@ -1255,7 +1259,8 @@ def doctor(home, agent=None):
     if 'copilot' in agents:
         mcp = home / COPILOT_MCP
         try:
-            servers = json.loads(mcp.read_text(encoding='utf-8')).get('mcpServers') if mcp.is_file() else {}
+            data = json.loads(mcp.read_text(encoding='utf-8')) if mcp.is_file() else {}
+            servers = data.get('mcpServers') if isinstance(data, dict) else None  # another shape counts as no servers
             if not copilot_has_context7(home, servers):
                 findings.append(f'context7 MCP is not registered for Copilot, so the documentation rule cannot be followed '
                                 f'(run `bin/harness install`, or add it to {mcp})')
