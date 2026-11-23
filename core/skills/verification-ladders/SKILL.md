@@ -43,6 +43,7 @@ For each surface: the rung reached, the command, and its result. List every skip
 
 ## Rules
 
+- For a browser rung, drive the app with the browser tool your agent already has (Claude's built-in browser, Codex's browser plugin, Copilot's VS Code browser tools or Playwright MCP) and read the page, not only the screenshot. With no browser tool, skip the rung and say so.
 - Generate and compare screenshots in the same environment as the baselines; rendering changes with the operating system, fonts, and hardware.
 - Stop repairing after the same failure twice: diagnose the root cause (`systematic-debugging`) instead of trying again.
 - When the risk item is security, load the `secure-development` skill for the controls to verify.
