@@ -34,7 +34,7 @@ Use it for:
 
 ## Work Unit Checklist
 
-Before committing, confirm:
+Before committing, confirm from evidence already gathered for this candidate; rerun nothing it already covers:
 
 - [ ] The commit has one clear purpose.
 - [ ] The repo still makes sense after applying only this commit.

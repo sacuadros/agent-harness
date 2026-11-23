@@ -10,5 +10,5 @@
 - Evidence applies only to the exact candidate. Reuse it only while content, paths, base branch, target environment, and delivery range remain unchanged; otherwise invalidate and rerun the affected checks or review.
 - After a cwd, worktree, Git, merge, test-environment, or unknown-mutation incident, inspect repository and provider state before retrying. Name a recovery command only when it can resolve the current block.
 - Commits are Conventional Commits planned as work units (`work-unit-commits` skill), with no `Co-Authored-By` trailers or other AI attribution in commits or PR descriptions.
-- Before commit, push, or PR, revalidate the intended candidate and focused checks.
+- Commit, push, or PR reuses the checks already run on that exact candidate; run only the ones it lacks.
 - Report the verified outcome, exact files, checks run, every failed, skipped, or pending check, findings, unverified aspects, and local, committed, pushed, merged, and deployed states separately.

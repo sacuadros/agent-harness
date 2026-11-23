@@ -38,7 +38,7 @@ Step 2 of Slice Flow (`core/instructions/09-slice-flow.md`) is now "Classify bef
 |---|---|---|
 | Does one bounded look explain it, with no risk item, finishable from the request plus `git diff`? | small | work inline, no backlog or story |
 | Otherwise | large | backlog, then story and pair per slice |
-| Does it touch a risk item? (irreversible data or migrations, security, contracts others consume, concurrency, delivery or environment, no test that would catch a regression) | Critical | Critical rungs of `verification-ladders`, one independent review |
+| Does it touch a risk item? (irreversible data or migrations, security, contracts others consume, concurrency, deploy or environment config, no test that would catch a regression) | Critical | Critical rungs of `verification-ladders`, one independent review |
 | Non-trivial behavior or integration, no risk item | Standard | the smallest useful regression check |
 | Bounded and reversible | Basic | one focused check and a diff readback |
 

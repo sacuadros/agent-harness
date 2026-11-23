@@ -101,6 +101,15 @@ class SliceFlowPacing(unittest.TestCase):
             self.assertNotIn('remain separately authorized', text, agent)
             self.assertLessEqual(text.count('Co-Authored-By'), 1, agent)
 
+    def test_delivery_reuses_evidence_instead_of_verifying_again(self):
+        for agent in ('claude', 'codex', 'copilot'):
+            text = harness('render', agent)
+            self.assertIn('reuses the checks already run on that exact candidate', text, agent)
+            self.assertNotIn('revalidate the intended candidate', text, agent)
+            self.assertIn('watch CI only when asked', text, agent)
+        pair = (REPO / 'core' / 'skills' / 'pair' / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertNotIn('then the suite once', pair)  # the suite runs per slice, not per test
+
     def test_rendered_instructions_stay_under_the_size_budget(self):
         for agent in ('claude', 'codex', 'copilot'):
             # About 22,800 before the trim. Deduplication alone reached about 20,000; going lower means dropping rules.
