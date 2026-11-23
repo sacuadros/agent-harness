@@ -37,10 +37,21 @@ CONVENTIONAL = re.compile(
     r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: \S')
 ATTRIBUTION = re.compile(r'co-authored-by|generated with \[?claude|🤖', re.I)
 RSYNC_REMOTE = r'rsync\s[^;&|]*\S+:'
+# A plain push waits on the instructions alone. One that rewrites or deletes remote history asks:
+# --force*, --delete, --mirror, --prune (git takes any unambiguous prefix, so match the shortest one),
+# -f/-d in any short-flag cluster, and +ref or :ref refspecs.
+FORCE_PUSH = GIT + (r'''push\b[^;&|\n]*\s["']?(?:--(?:for|de|mi|pru)'''
+                    r'''|-[a-zA-Z]*[fd][a-zA-Z]*(?=["'\s]|$)|[+:]\S)''')
+# Config that turns a plain-looking push destructive: remote.<name>.mirror or .push, inline (-c) or stored.
+PUSH_CONFIG = (r'''(?:(?:git\s+(?:[^;&|\n]*?\s)?-c\s*["']?|''' + GIT + r'''config\s[^;&|\n]*?)'''
+               r'''(?i:remote\.[^\s=;&|]+\.(?:mirror|push)\b)|''' + GIT + r'''remote\s+add\s[^;&|\n]*--mirror)''')
+# The only form Codex execpolicy sees: the flag as the first argument (see codex.rules).
+CODEX_FORCE_PUSH = r'git\s+push\s+(?:--force|--force-with-lease|--force-if-includes|--delete|--mirror|--prune|-f|-d)(?=\s|$)'
 REMOTE = [
     (r'(?:ssh|scp|sftp|mosh)\s', 'conexión remota'),
     (RSYNC_REMOTE, 'transferencia remota con rsync'),
-    (GIT + r'push\b', 'git push'),
+    (FORCE_PUSH, 'git push que reescribe o borra historia remota'),
+    (PUSH_CONFIG, 'configurar un push que reescribe o borra historia remota'),
     (r'gh\s+pr\s+(?:create|merge|close|ready|comment|review)\b', 'operación de PR en GitHub'),
     (r'gh\s+(?:release\s+create|repo\s+(?:create|delete)|workflow\s+run)\b', 'operación en GitHub'),
     (r'(?:npm|pnpm|yarn)\s+publish\b', 'publicación de paquete'),
@@ -128,7 +139,8 @@ CODEGRAPH_FORBIDDEN = re.compile(SEG + r'codegraph\s+(uninit|install|uninstall|u
 # What Codex execpolicy prefix rules can match once it unwraps `bash -lc` into plain commands.
 PLAIN_SEG = r'(?:^|[;&|\n]\s*)'
 # rsync is left out: execpolicy cannot tell host: from a local path, so the hook handles it.
-CODEX_PROMPTED = [p.replace(GIT, r'git\s+') for p, _ in REMOTE if p != RSYNC_REMOTE] + [r'codegraph\s+index\b']
+CODEX_PROMPTED = [p.replace(GIT, r'git\s+') for p, _ in REMOTE if p not in (RSYNC_REMOTE, FORCE_PUSH, PUSH_CONFIG)] + [
+    CODEX_FORCE_PUSH, r'codegraph\s+index\b']
 PATCH_FILE = re.compile(r'^\*\*\* (?:Update|Delete) File: (.+)$', re.M)  # Codex apply_patch
 CODEGRAPH_INDEX = re.compile(SEG + r'codegraph\s+index\b')
 # Matched on normalize_paths(cmd), so Windows homes and %LOCALAPPDATA% already read ~/AppData/Local.
@@ -171,13 +183,17 @@ def bash_decision(data, codex=False):
         # Codex rejects "ask"; ~/.codex/rules/default.rules prompts, but only for plain forms.
         if any(re.search(PLAIN_SEG + p, cmd) for p in CODEX_PROMPTED):
             return None
+        if re.search(SEG + PUSH_CONFIG, cmd):  # no plain form exists for the rules to prompt on
+            return decision('deny', out['hookSpecificOutput']['permissionDecisionReason'] + ' Codex no puede '
+                                    'pedir aprobación para esta forma: pide al usuario que lo corra.')
         if re.search(SEG + RSYNC_REMOTE, cmd):
             return decision('deny', 'Regla global: rsync remoto requiere autorización explícita. '
                                     'Pide permiso al usuario y usa `scp`, que Codex sí pide aprobar.')
         return decision('deny', 'Regla global: operación remota en una forma que las reglas de '
                                 'Codex no ven (git -C/-c, VAR=, $(), subshell). Reescríbela en '
-                                'forma simple (p. ej. `cd repo && git push`) para que Codex pida '
-                                'aprobación.')
+                                'forma simple (p. ej. `cd repo && gh pr create`) para que Codex pida '
+                                'aprobación. En un push forzado o de borrado, el flag va justo después '
+                                'de `git push` (p. ej. `git push --force origin x`).')
     return out
 
 
@@ -294,10 +310,28 @@ def selftest():
     assert bash('python3 -m unittest t && git commit -m "wip"') == 'deny'
     assert bash('git commit -qm "update stuff"') == 'deny'
     assert bash('git commit -am "chore: bump"') is None
-    assert bash('git push origin main') == 'ask'
-    assert bash('git status && git push') == 'ask'
-    assert bash('git -C ../repo push origin x') == 'ask'
+    assert bash('git push origin main') is None  # the instructions hold a push until the user asks
+    assert bash('git -C ../repo push origin x') is None
+    # A push that rewrites or deletes remote history still asks, wherever the flag sits.
+    for risky in ('git push --force origin main', 'git push origin main -f', 'git push -uf origin x',
+                  'git push --force-with-lease=main origin main', 'git -C ../repo push --delete origin old',
+                  'git push origin :old', 'git push origin +main', 'git push origin "+main"',
+                  'git push --mirror', 'git push --prune origin', 'cd repo && git push -d origin old',
+                  'git push --del origin old', 'git push --mirr', 'git push --pru origin', 'git push --for origin x'):
+        assert bash(risky) == 'ask', risky
+    for plain in ('git push -u origin main', 'git push --follow-tags', 'git push origin fix-d', 'git push origin main:main',
+                  'git push --progress origin main', 'git push --porcelain', 'git push --no-verify',
+                  'git push --dry-run origin main', 'git push -o ci.skip', 'git stash push -f', 'git push; rm -f x'):
+        assert bash(plain) is None, plain
     assert bash('git -C ../repo commit -m "wip"') == 'deny'
+    # Config can make a plain-looking push destructive, so setting it asks too.
+    for risky in ('git -c remote.origin.mirror=true push origin', 'git config Remote.origin.Mirror true',
+                  'git -c "remote.origin.push=+refs/heads/*:refs/heads/*" push', 'git remote add --mirror=push bak ../b.git',
+                  'cd repo && git config --local remote.origin.push "+main"'):
+        assert bash(risky) == 'ask', risky
+    for plain in ('git config --get remote.origin.url', 'git config remote.origin.pushurl ../x.git', 'git remote -v',
+                  'git remote add upstream ../u.git', 'git -c http.version=HTTP/1.1 push origin main'):
+        assert bash(plain) is None, plain
     assert bash('ssh host uptime') == 'ask'
     assert bash('rsync -a dist/ host:/srv') == 'ask'
     assert bash('rsync -a src/ dst/') is None
@@ -441,19 +475,25 @@ def selftest():
     # Copilot: camelCase payloads carry toolArgs as a JSON string; replies need top-level fields.
     camel = copilot_output({'toolName': 'bash', 'toolArgs': json.dumps({'command': 'git commit -m "wip"'})})
     assert camel['permissionDecision'] == 'deny' and camel['hookSpecificOutput']['permissionDecision'] == 'deny'
-    snake = copilot_output({'tool_name': 'Bash', 'tool_input': {'command': 'git push'}})
+    snake = copilot_output({'tool_name': 'Bash', 'tool_input': {'command': 'ssh host uptime'}})
     assert snake['permissionDecision'] == 'ask'
     assert copilot_output({'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}) is None
     # execpolicy cannot tell host: from a local path, so remote rsync is the hook's job in Codex.
     assert codex('rsync -a dist/ host:/srv') == 'deny'
     assert codex('rsync -a src/ dst/') is None
     assert bash('rsync -a dist/ host:/srv') == 'ask'
-    assert codex('git push') is None
-    assert codex('cd ../repo && git push origin x') is None
     assert codex('ssh host uptime') is None
+    assert codex('cd ../repo && gh pr create --fill') is None
     # Forms execpolicy prefix rules cannot see: deny and ask for the plain form.
-    assert codex('git -C ../repo push origin x') == 'deny'
-    assert codex('FOO=1 git push') == 'deny'
+    assert codex('FOO=1 ssh host uptime') == 'deny'
+    assert codex('git push origin main') is None
+    for unpromptable in ('git -c remote.origin.mirror=true push origin', 'git config remote.origin.mirror true'):
+        out = bash_decision({'tool_input': {'command': unpromptable}}, codex=True)['hookSpecificOutput']
+        assert out['permissionDecision'] == 'deny' and 'pide al usuario' in out['permissionDecisionReason'], unpromptable
+    assert codex('git push --force origin main') is None and codex('cd repo && git push -d origin old') is None  # the rules prompt
+    for unseen in ('git push origin main --force', 'git push -uf origin x', 'git push --force-with-lease=main origin main',
+                   'git push origin +main', 'git push --del origin old', 'git push --mirr'):
+        assert codex(unseen) == 'deny', unseen
     assert codex('echo $(gh pr create --fill)') == 'deny'
     out = bash_decision({'tool_input': {'command': 'git commit -m "wip"'}}, codex=True)
     assert out['hookSpecificOutput']['permissionDecision'] == 'deny'
@@ -462,7 +502,7 @@ def selftest():
     def mcp(tool_input, codex=False):
         out = bash_decision({'tool_name': 'mcp__desktop-commander__start_process', 'tool_input': tool_input}, codex)
         return out and out['hookSpecificOutput']['permissionDecision']
-    assert mcp({'command': 'git push'}) == 'ask' and mcp({'command': 'git push'}, codex=True) == 'deny'
+    assert mcp({'command': 'ssh host uptime'}) == 'ask' and mcp({'command': 'ssh host uptime'}, codex=True) == 'deny'
     assert mcp({'input': 'git commit -m "wip"'}) == 'deny'
     assert mcp({'command': 'cat ~/.aws/credentials'}, codex=True) == 'deny'
     assert mcp({'command': 'ls'}, codex=True) is None and mcp({'pid': 3}) is None

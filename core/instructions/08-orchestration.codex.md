@@ -7,6 +7,7 @@
   - **Noisy checks**: long or noisy tests, logs, or scans whose output would flood the primary context.
   - **Independent review**: only when the Risk line names an item (Critical assurance).
   - **Context backstop**: past about 150k tokens of context, hand the next bounded unit to a subagent.
+- Batch independent lookups in one step.
 - When a reason applies, spawn the smallest useful set, normally one per independent lane, and continue useful local work while they run.
 - For implementation, assign one writer per file or ownership boundary and never allow overlapping edits.
 - Route by responsibility only after delegation is warranted; do not delegate merely to select a cheaper model.

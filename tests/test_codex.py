@@ -179,17 +179,22 @@ for line in sys.stdin:
         with self.assertRaises(TimeoutError):
             query(self.home, command=command('hang'), timeout=1)
 
-    def test_codex_memory_enforcement_resets_at_actual_user_messages(self):
+    def test_codex_evidence_gate_resets_at_actual_user_messages(self):
         hook = load_hook('enforce_memory_graph')
         transcript = self.home / 'turns.jsonl'
         entries = [
             {'type': 'event_msg', 'payload': {'type': 'item_completed', 'item': {
-                'type': 'McpToolCall', 'server': 'engram', 'tool': 'mem_save'}}},
-            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'content': []}},
-            {'type': 'event_msg', 'payload': {'type': 'item_completed', 'item': {'type': 'FileChange'}}},
+                'type': 'FileChange', 'changes': {'src/a.py': {'type': 'update'}}}}},
         ]
         transcript.write_text(''.join(json.dumps(entry) + '\n' for entry in entries), encoding='utf-8')
-        self.assertEqual(hook.stop_decision({'transcript_path': str(transcript)})['decision'], 'block')
+        self.assertEqual(hook.evidence_decision({'transcript_path': str(transcript)})['decision'], 'block')
+        entries += [  # once a user message arrives, the unverified edit belongs to the previous turn
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'content': []}},
+            {'type': 'event_msg', 'payload': {'type': 'item_completed', 'item': {
+                'type': 'McpToolCall', 'server': 'engram', 'tool': 'mem_search'}}},
+        ]
+        transcript.write_text(''.join(json.dumps(entry) + '\n' for entry in entries), encoding='utf-8')
+        self.assertIsNone(hook.evidence_decision({'transcript_path': str(transcript)}))
 
     def test_runtime_diagnostics_reveal_missing_integrations_and_compression(self):
         ns = runpy.run_path(str(HARNESS))

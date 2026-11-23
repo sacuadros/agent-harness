@@ -37,11 +37,6 @@
         "type": "command",
         "args": ["{claude_hooks}/enforce_memory_graph.py", "evidence", "--copilot"],
         "timeoutSec": 10
-      },
-      {
-        "type": "command",
-        "args": ["{claude_hooks}/enforce_memory_graph.py", "stop", "--copilot"],
-        "timeoutSec": 10
       }
     ]
   }

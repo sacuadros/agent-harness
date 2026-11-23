@@ -730,7 +730,7 @@ class Hooks(unittest.TestCase):
                 if argv[-1] == 'bash':
                     self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
                 ran += 1
-        self.assertEqual(ran, 8)  # with the MCP guard
+        self.assertEqual(ran, 7)  # with the MCP guard
 
     def test_claude_hooks_run_without_a_shell(self):
         # Exec form: Claude spawns the interpreter itself, so zsh, Git Bash and PowerShell behave alike.
@@ -779,8 +779,7 @@ class Hooks(unittest.TestCase):
         self.assertEqual(data['env'], {'X': '1', **SPAWN, 'ENGRAM_CLOUD_SERVER': 'https://engram.example', 'ENGRAM_CLOUD_AUTOSYNC': '1'})
         self.assertEqual(data['hooks']['UserPromptSubmit'], [foreign])
         hooks = (self.home / '.claude' / 'hooks').as_posix()
-        self.assertEqual(self.commands(data['hooks']['Stop']), [
-            f'/usr/bin/python3 {hooks}/enforce_memory_graph.py stop',
+        self.assertEqual(self.commands(data['hooks']['Stop']), [  # the retired Engram stop entry is dropped
             f'/usr/bin/python3 {hooks}/engram_auto_enroll.py',
             f'/usr/bin/python3 {hooks}/enforce_memory_graph.py evidence'])
         self.assertIn(f'/usr/bin/python3 {hooks}/harness_guards.py bash',
@@ -823,11 +822,10 @@ class Hooks(unittest.TestCase):
         hooks = json.loads(hooks_json.read_text(encoding='utf-8'))['hooks']
         self.assertEqual(hooks['PostToolUse'], [foreign])
         stop = hooks['Stop']
-        self.assertEqual(len(stop), 4)
+        self.assertEqual(len(stop), 3)  # the retired Engram stop entry is dropped
         self.assertEqual(stop[1], foreign)
         self.assertTrue(self.commands([stop[0]])[0].endswith('/.codex/hooks/engram_auto_enroll.py'))
-        self.assertTrue(self.commands([stop[2]])[0].endswith('/.claude/hooks/enforce_memory_graph.py stop'))
-        self.assertTrue(self.commands([stop[3]])[0].endswith('/.claude/hooks/enforce_memory_graph.py evidence'))
+        self.assertTrue(self.commands([stop[2]])[0].endswith('/.claude/hooks/enforce_memory_graph.py evidence'))
         self.assertEqual(len(hooks['PreToolUse']), 4)  # with the MCP guard
 
     def test_rules_block_keeps_codex_added_rules(self):
@@ -1161,9 +1159,8 @@ class Copilot(unittest.TestCase):
             self.assertTrue(commands[0].startswith('py -3 '), commands[0])
         stop = [h[shell] for h in hooks['hooks']['Stop']]
         guard = f'{self.home.as_posix()}/.claude/hooks/enforce_memory_graph.py'
-        self.assertEqual(len(stop), 2)
+        self.assertEqual(len(stop), 1)
         self.assertIn(f'{guard} evidence --copilot', stop[0])
-        self.assertIn(f'{guard} stop --copilot', stop[1])
         self.assertIn(f'{guard} pretool --copilot', ' '.join(commands))
         self.assertEqual(len(commands), 3)
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
@@ -1244,13 +1241,6 @@ class EvidenceOutput(unittest.TestCase):
 
     def test_claude_and_codex_output_is_unchanged(self):
         self.assertEqual(set(self.decide()), {'decision', 'reason'})
-        self.assertEqual(set(self.decide(mode='stop')), {'decision', 'reason'})
-
-    def test_copilot_engram_stop_gets_the_decision_in_both_places(self):
-        out = self.decide('--copilot', mode='stop')
-        self.assertEqual((out['decision'], out['hookSpecificOutput']['hookEventName']), ('block', 'Stop'))
-        self.assertEqual(out['hookSpecificOutput']['decision'], 'block')
-        self.assertIn('Engram', out['hookSpecificOutput']['reason'])
 
 
 def load_hook(name):

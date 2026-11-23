@@ -137,11 +137,11 @@ What counts as verification: any shell command (`Bash`, `PowerShell`, or `run_in
 
 The scope check blocked turns that edited 5 files or 150 lines, sized from Edit and Write input it could only partly see. The evidence gate asks for what the rule above requires. Keeping both would stack two Stop prompts on the same turn, so the scope check was removed.
 
-## Memory and CodeGraph in Copilot
+## CodeGraph in Copilot
 
 ### Why
 
-Claude Code and Codex already had two hook rules: save Engram memory after substantive work, and query CodeGraph before broad searches in an indexed repo. Copilot had both only as instructions in prose. The same hook now serves all three agents, so the rules mean the same thing everywhere.
+Claude Code and Codex already had a hook rule: query CodeGraph before broad searches in an indexed repo. Copilot had it only as an instruction in prose. The same hook now serves all three agents, so the rule means the same thing everywhere.
 
 ### How
 
@@ -149,15 +149,6 @@ Copilot's `PreToolUse` payload does not include a transcript path. The hook ther
 
 ```mermaid
 flowchart TD
-    subgraph stop [Stop: stop --copilot]
-        S1[Turn stops] --> S2{stop_hook_active?}
-        S2 -- yes --> SZ[Let it stop]
-        S2 -- no --> S3{Engram write this turn?}
-        S3 -- yes --> SZ
-        S3 -- no --> S4{Code edited, or 8 or more work calls?}
-        S4 -- no --> SZ
-        S4 -- yes --> S5[Block once: save to Engram<br/>or say nothing durable]
-    end
     subgraph pre [PreToolUse: pretool --copilot]
         P1[Search tool call] --> P2{Repo root has .codegraph?}
         P2 -- no --> PZ[Allow]
@@ -172,11 +163,11 @@ flowchart TD
     end
 ```
 
-What counts as an Engram write: `mcp_engram_mem_save`, `mcp_engram_mem_update` and `mcp_engram_mem_session_summary`. Engram reads, `manage_todo_list`, `tool_search`, `task_complete`, `vscode_askQuestions`, `memory` and subagent calls are not work.
-
-What counts as work: any file edit, documentation included, or 8 or more other tool calls in the turn. Subagent calls are not "results arrive later" as in Claude Code, because Copilot subagents finish inside the turn.
-
 What counts as a search: `grep_search`, `file_search`, `semantic_search`, and `run_in_terminal` with `rg`, `grep`, `find` and similar commands. CodeGraph has no MCP server in Copilot, so using it means a terminal command that starts with `codegraph`.
+
+### Why the memory stop hook was removed
+
+A Stop hook used to block a turn that edited a file or made 8 or more tool calls without an Engram write. Over 14 days of Claude Code transcripts (1,586 turns) it blocked 126 times, in 71 of 352 turns with edits, and memory calls appeared in 83% of turns with one to three edits. Saving is now an instruction: once, when non-trivial work closes.
 
 ### Limits
 
@@ -228,7 +219,7 @@ flowchart TD
 
 ### Why
 
-Engram and CodeGraph are required by the rules: the memory and code-graph checks run on every PC. The cloud sync is a different thing. It needs a server and a token, and only some PCs have them. The auto-enroll hook (`engram_auto_enroll.py`) does one job: it enrolls projects for that sync. On a PC with no server it runs on every Stop and SessionStart and does nothing useful, so it is not installed there.
+Engram and CodeGraph are required by the rules: the memory rule and the code-graph check apply on every PC. The cloud sync is a different thing. It needs a server and a token, and only some PCs have them. The auto-enroll hook (`engram_auto_enroll.py`) does one job: it enrolls projects for that sync. On a PC with no server it runs on every Stop and SessionStart and does nothing useful, so it is not installed there.
 
 ### How
 
@@ -265,8 +256,8 @@ The instructions state each obligation once, in the section where it belongs, an
 |---|---|
 | Commit and push approval stated five times | Once, in Slice Flow's pace step |
 | Commit format, worktree placement and forbidden CodeGraph commands explained at length | One clause each; the guard's own message carries the rest |
-| "Before saying done, call `mem_session_summary`" | Removed: the Engram server says ordinary completion does not need it. The Stop hook still asks for a save after substantive work |
-| Save memory "after any decision, bugfix, discovery" | Save verified durable conclusions, grouped by topic, not every event |
+| "Before saying done, call `mem_session_summary`" | Removed: the Engram server says ordinary completion does not need it |
+| Save memory "after any decision, bugfix, discovery" | Save once when non-trivial work closes: verified durable conclusions, grouped by topic |
 | Backlog file layout and the test-by-test mechanics inside Slice Flow | Left to the `backlog` and `pair` skills, which load when needed |
 | (nothing) | "No change is a valid outcome": when the code already does what was asked, say so and change nothing |
 

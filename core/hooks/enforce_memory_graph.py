@@ -1,6 +1,5 @@
-"""Claude Code hooks that enforce Engram and CodeGraph usage.
+"""Claude Code hooks that enforce the evidence gate and CodeGraph usage.
 
-  stop     Stop hook: blocks once when a substantive turn ends without an Engram write.
   evidence Stop hook: blocks once when a turn edited code and ran no command or subagent afterwards.
   pretool  PreToolUse hook (Grep|Glob|Bash): denies broad search in a CodeGraph-indexed
            repo until the session has queried CodeGraph at least once.
@@ -16,16 +15,9 @@ import re
 import sys
 from pathlib import Path
 
-ENGRAM_WRITES = ('mem_save', 'mem_update', 'mem_session_summary')
 EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}
 COPILOT_EDITS = {'apply_patch', 'create_file', 'replace_string_in_file', 'multi_replace_string_in_file'}
 COPILOT_SEARCH = ('grep_search', 'file_search', 'semantic_search')
-SUBSTANTIVE_TOOL_CALLS = 8
-# Tools that organize or recall work without producing anything worth remembering.
-BOOKKEEPING = ('mcp__ccd_turn__', 'mcp__ccd_session__', 'ToolSearch', 'Skill', 'TodoWrite',
-               'Subagent', 'manage_todo_list', 'tool_search', 'task_complete', 'vscode_askQuestions', 'memory')  # Codex and Copilot subagents: only the evidence gate counts them
-MEMORY_READS = ('mem_search', 'mem_context', 'mem_get_observation', 'mem_judge', 'mem_current_project')  # ponytail: tool count as a proxy for "a finding happened"
-CLI_WRITE = re.compile(r'(?:^|[;&|\n]\s*)engram\s+(?:save|update)\b')
 SEARCH_CMD = re.compile(r'^\s*(?:rg|grep|egrep|ag|find|fd|git\s+grep)\b'  # PowerShell below
                         # PowerShell takes any unambiguous parameter prefix; -Depth implies -Recurse.
                         # ls/dir need -rec or longer: POSIX `ls -r` only reverses the sort.
@@ -123,27 +115,6 @@ def last_turn_tools(path):
 
 
 SHELLS = ('Bash', 'PowerShell')  # Claude Code on Windows has a separate PowerShell tool
-
-
-def stop_decision(data):
-    if data.get('stop_hook_active'):
-        return None
-    turn = last_turn_tools(data.get('transcript_path', ''))
-    names = [t.get('name', '') for t in turn]
-    if any(n.endswith(ENGRAM_WRITES) for n in names) or any(
-            CLI_WRITE.search(t.get('input', {}).get('command', '')) for t in turn if t.get('name') in SHELLS):
-        return None
-    names = [n for n in names if not n.startswith(BOOKKEEPING) and not n.endswith(MEMORY_READS)]
-    waiting = any(t.get('name') == 'Agent' or (t.get('name') in SHELLS and t.get('input', {}).get(
-        'run_in_background')) for t in turn)
-    if waiting and not (EDIT_TOOLS & set(names)):
-        return None  # results arrive in a later turn; that turn decides what to remember
-    if not (EDIT_TOOLS & set(names)) and len(names) < SUBSTANTIVE_TOOL_CALLS:
-        return None
-    return {'decision': 'block', 'reason': (
-        'Engram: este turno hizo cambios o trabajo sustantivo sin guardar memoria. '
-        'Si hubo una decisión, hallazgo, bugfix o convención, llama mem_save ahora. '
-        'Si no hay nada durable, dilo en una línea. No repitas la respuesta anterior.')}
 
 
 def codegraph_used(path):
@@ -273,35 +244,6 @@ def selftest():
         f.close()
         return f.name
 
-    edit = transcript(('prompt', 'corrige la acción → ñandú'), ('Edit', {}))
-    assert stop_decision({'transcript_path': edit})['decision'] == 'block'
-    assert stop_decision({'transcript_path': edit, 'stop_hook_active': True}) is None
-    saved = transcript(('prompt', 'x'), ('Edit', {}), ('mcp__plugin_engram_engram__mem_save', {}))
-    assert stop_decision({'transcript_path': saved}) is None
-    old_edit = transcript(('Edit', {}), ('prompt', 'y'), ('Read', {}))
-    assert stop_decision({'transcript_path': old_edit}) is None
-    many = transcript(('prompt', 'x'), *[('Bash', {'command': 'ls'})] * SUBSTANTIVE_TOOL_CALLS)
-    assert stop_decision({'transcript_path': many})['decision'] == 'block'
-    bookkeeping = transcript(('prompt', 'x'), *[('mcp__ccd_turn__update_plan', {}), ('ToolSearch', {}),
-                                                 ('mcp__plugin_engram_engram__mem_judge', {}),
-                                                 ('Skill', {}), ('mcp__ccd_turn__wrap_up', {})] * 2)
-    assert stop_decision({'transcript_path': bookkeeping}) is None
-    reads = [('Read', {})] * SUBSTANTIVE_TOOL_CALLS
-    for launch in (('Agent', {'prompt': 'research'}), ('Bash', {'command': 'pytest', 'run_in_background': True})):
-        waiting = transcript(('prompt', 'x'), launch, *reads)
-        assert stop_decision({'transcript_path': waiting}) is None, launch
-    edited_while_waiting = transcript(('prompt', 'x'), ('Agent', {}), ('Edit', {}))
-    assert stop_decision({'transcript_path': edited_while_waiting})['decision'] == 'block'
-    cli_save = transcript(('prompt', 'x'), ('Edit', {}), *[('Bash', {'command': 'ls'})] * SUBSTANTIVE_TOOL_CALLS,
-                          ('Bash', {'command': 'cd repo && engram save "t" "c" --project p'}))
-    assert stop_decision({'transcript_path': cli_save}) is None
-    after_heredoc = transcript(('prompt', 'x'), ('Edit', {}),
-                               ('Bash', {'command': "python3 - <<'EOF'\nprint(1)\nEOF\nengram save t c"}))
-    assert stop_decision({'transcript_path': after_heredoc}) is None
-    ps_save = transcript(('prompt', 'x'), ('Edit', {}), ('PowerShell', {'command': 'engram save t c'}))
-    assert stop_decision({'transcript_path': ps_save}) is None
-    cli_read = transcript(('prompt', 'x'), ('Edit', {}), ('Bash', {'command': 'engram search harness'}))
-    assert stop_decision({'transcript_path': cli_read})['decision'] == 'block'
 
     repo = tempfile.mkdtemp()
     (Path(repo) / '.git').mkdir()
@@ -355,11 +297,6 @@ def selftest():
         return f.name
 
     prompt = {'type': 'UserMessage'}
-    cx_edit = codex_transcript(prompt, {'type': 'FileChange', 'changes': {}})
-    assert stop_decision({'transcript_path': cx_edit})['decision'] == 'block'
-    cx_saved = codex_transcript(prompt, {'type': 'FileChange'},
-                                {'type': 'McpToolCall', 'server': 'engram', 'tool': 'mem_save'}, zst=True)
-    assert stop_decision({'transcript_path': cx_saved}) is None
     cx_fresh = codex_transcript(prompt)
     assert pretool_decision({'tool_name': 'Bash', 'cwd': repo, 'transcript_path': cx_fresh,
                              'tool_input': {'command': 'rg foo'}})
@@ -384,10 +321,9 @@ def selftest():
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src)})['decision'] == 'block'
     cx_run = {'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', 'pytest']}
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, cx_run)}) is None
-    # A Codex subagent after the edit counts as verification, and never as work for the Engram stop hook.
+    # A Codex subagent after the edit counts as verification.
     for delegated in ('SubAgentActivity', 'CollabAgentToolCall'):
         assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, {'type': delegated})}) is None, delegated
-    assert stop_decision({'transcript_path': codex_transcript(prompt, *[{'type': 'SubAgentActivity'}] * 9)}) is None
     # Copilot (VS Code) transcripts: user.message and tool.execution_start events.
     def copilot_transcript(*items):
         f = tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False, encoding='utf-8')
@@ -420,21 +356,6 @@ def selftest():
         assert cp_decision(cp_src, (delegate, {'description': 'run the tests'})) is None, delegate
     old_turn = copilot_transcript(('prompt', {}), cp_src, ('prompt', {}), ('read_file', {'filePath': 'a.py'}))
     assert evidence_decision({'transcript_path': old_turn}) is None
-    # Copilot Engram stop rule: edits and 8+ work calls need an Engram write; housekeeping does not count.
-    def cp_stop(*items, **extra):
-        return stop_decision({'transcript_path': copilot_transcript(('prompt', {}), *items), **extra})
-
-    assert cp_stop(cp_src)['decision'] == 'block'
-    assert cp_stop(cp_src, ('mcp_engram_mem_save', {})) is None
-    read = ('read_file', {'filePath': 'a.py'})
-    assert cp_stop(*[read] * SUBSTANTIVE_TOOL_CALLS)['decision'] == 'block'
-    assert cp_stop(*[read] * (SUBSTANTIVE_TOOL_CALLS - 1)) is None
-    quiet = [('manage_todo_list', {}), ('tool_search', {}), ('task_complete', {}), ('vscode_askQuestions', {}),
-             ('memory', {}), ('mcp_engram_mem_search', {}), ('mcp_engram_mem_context', {}),
-             ('runSubagent', {}), ('execution_subagent', {})]
-    assert cp_stop(*quiet * 2) is None
-    assert cp_stop(('runSubagent', {}), *[read] * SUBSTANTIVE_TOOL_CALLS)['decision'] == 'block'  # not "arrives later"
-    assert cp_stop(cp_src, stop_hook_active=True) is None
     plain = tempfile.mkdtemp()
     (Path(plain) / '.git').mkdir()
     # Copilot CodeGraph rule: VS Code names tools in tool_name/tool_input; CodeGraph runs in the terminal.
@@ -481,8 +402,8 @@ def main():
         if mode == 'pretool':
             result = pretool_decision(data, copilot='--copilot' in sys.argv)
         else:
-            result = {'stop': stop_decision, 'evidence': evidence_decision,
-                      'posttool': posttool_decision, 'sessionend': sessionend}[mode](data)
+            result = {'evidence': evidence_decision, 'posttool': posttool_decision,
+                      'sessionend': sessionend}[mode](data)
     except Exception as error:
         if '--copilot' not in sys.argv:
             return  # preserve Claude/Codex fail-open behavior
@@ -503,7 +424,7 @@ def main():
         spec = result['hookSpecificOutput']
         result = {**result, 'permissionDecision': spec['permissionDecision'],
                   'permissionDecisionReason': spec['permissionDecisionReason']}
-    if result and '--copilot' in sys.argv and mode in ('stop', 'evidence'):
+    if result and '--copilot' in sys.argv and mode == 'evidence':
         # VS Code's Copilot reads a Stop decision only inside hookSpecificOutput; Copilot CLI documents the top level.
         result = {**result, 'hookSpecificOutput': {'hookEventName': 'Stop', **result}}
     if result:
