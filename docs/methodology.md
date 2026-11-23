@@ -157,6 +157,43 @@ What counts as a search: `grep_search`, `file_search`, `semantic_search`, and `r
 - The hooks have not been seen firing in a live VS Code chat, where agent hooks are in preview. They were checked against real Copilot transcripts and the hook's own tests.
 - The repo root comes from the event's `cwd`, or the hook's working directory if the event has none. If VS Code starts hooks outside the workspace, the CodeGraph rule does not fire. In a workspace with several folders, another folder's index can deny a search once; one `codegraph` command in the terminal lifts it. The command has to start the terminal line (`codegraph explore ...`, not `npx codegraph ...`).
 
+## Context7 before library code
+
+### Why
+
+Agents write library and API calls from memory, and memory can be out of date. Context7 serves current documentation for a library, so the call matches the version in use. In the sessions measured on one Mac, the three agents already called Context7 without being told to (54 calls in Claude Code, 182 in Copilot, 380 in Codex); the rule makes that habit explicit.
+
+### How
+
+One rule in Quality Guardrails, loaded in every session: before writing code against a library, framework, SDK, CLI, or cloud API, read its current documentation with Context7, and when Context7 is unavailable, use the official documentation and say so.
+
+Each agent gets the server from a different place:
+
+| Agent | Where Context7 comes from | What the harness does |
+| --- | --- | --- |
+| Claude Code | claude.ai connector | Nothing: no local file shows it |
+| Codex | `mcp_servers` in `~/.codex/config.toml` | `doctor` reports it when missing |
+| Copilot | `~/.copilot/mcp-config.json` or VS Code's user `mcp.json` | `install` adds it to the first file when neither has it; `doctor` reports it when neither has it |
+
+One check decides "has Context7": an entry whose name contains `context7`, or whose `url` is on `context7.com`. `install` and `doctor` share it, so an existing `io.github.upstash/context7` entry is never duplicated. The entry `install` writes is `{"type": "http", "url": "https://mcp.context7.com/mcp", "tools": ["*"]}`.
+
+```mermaid
+flowchart TD
+    A[install, Copilot selected] --> B{Any Context7 entry in mcp-config.json?}
+    B -- yes --> C[Leave the file as it is]
+    B -- no --> D[Add the context7 entry]
+    E[doctor] --> F{Codex selected and no Context7 in config.toml?}
+    F -- yes --> G[Report it]
+    E --> H{Copilot selected and no Context7 in either file?}
+    H -- yes --> G
+```
+
+### Limits
+
+- No hook. Nothing can tell deterministically that an agent is about to use a library, so the rule is instructions only.
+- Claude Code is not verified: `doctor` stays silent for it, because a warning would be false on every run for people who have the connector.
+- No API key is written. Context7 works without one, and the harness never writes a secret into an MCP file.
+
 ## Engram cloud is optional
 
 ### Why

@@ -88,6 +88,12 @@ class SliceFlowPacing(unittest.TestCase):
         for agent in ('claude', 'codex', 'copilot'):
             self.assertIn('No change is a valid outcome', harness('render', agent), agent)
 
+    def test_context7_is_required_before_library_code(self):
+        rule = ('Before writing code against a library, framework, SDK, CLI, or cloud API, read its current '
+                'documentation with Context7. If Context7 is unavailable, use the official documentation and say so.')
+        for agent in ('claude', 'codex', 'copilot'):
+            self.assertEqual(harness('render', agent).count(rule), 1, agent)
+
     def test_commit_rules_are_stated_once(self):
         for agent in ('claude', 'codex', 'copilot'):
             text = harness('render', agent)
@@ -1115,13 +1121,46 @@ class EngramMcp(unittest.TestCase):
         config.write_text(json.dumps({'mcpServers': {'chrome-devtools': chrome}}), encoding='utf-8')
         self.run_harness('install')
         self.assertEqual(json.loads(config.read_text(encoding='utf-8'))['mcpServers'], {
-            'chrome-devtools': chrome,
+            'chrome-devtools': chrome, 'context7': self.CONTEXT7,
             'engram': {'type': 'local', 'command': str(self.engram), 'args': ['mcp', '--tools=agent'], 'tools': ['*']}})
         self.assertIn('no changes', self.run_harness('install'))
-        mine = '{"mcpServers": {"engram": {"command": "engram"}}}'  # an entry of the user's own stays as written
-        config.write_text(mine, encoding='utf-8')
+        mine = {'engram': {'command': 'engram'}, 'context7': {'command': 'mine'}}  # entries of the user's own stay as written
+        config.write_text(json.dumps({'mcpServers': mine}), encoding='utf-8')
+        written = config.read_bytes()
         self.run_harness('install')
-        self.assertEqual(config.read_text(encoding='utf-8'), mine)
+        self.assertEqual(config.read_bytes(), written)
+
+    CONTEXT7 = {'type': 'http', 'url': 'https://mcp.context7.com/mcp', 'tools': ['*']}
+
+    def copilot_servers(self, existing=None):
+        config = self.home / '.copilot' / 'mcp-config.json'
+        config.parent.mkdir(exist_ok=True)
+        if existing is not None:
+            config.write_text(json.dumps({'mcpServers': existing}), encoding='utf-8')
+        self.run_harness('install')
+        return json.loads(config.read_text(encoding='utf-8'))['mcpServers'] if config.is_file() else None
+
+    def test_copilot_is_not_given_context7_twice_when_vscode_has_it(self):
+        user = self.home / 'Library/Application Support/Code/User'
+        user.mkdir(parents=True)
+        (user / 'mcp.json').write_text('{\n  // comment\n  "servers": {"io.github.upstash/context7": {}}\n}\n',
+                                       encoding='utf-8', newline='\n')
+        self.assertNotIn('context7', self.copilot_servers({'chrome-devtools': {'type': 'local', 'command': 'npx'}}))
+
+    def test_copilot_gets_context7_next_to_its_other_servers(self):
+        chrome = {'type': 'local', 'command': 'npx', 'args': ['-y', 'chrome-devtools-mcp@latest'], 'tools': ['*']}
+        servers = self.copilot_servers({'chrome-devtools': chrome})
+        self.assertEqual(servers['context7'], self.CONTEXT7)
+        self.assertEqual(servers['chrome-devtools'], chrome)
+
+    def test_copilot_keeps_an_existing_context7_server(self):
+        for name, entry in (('io.github.upstash/context7', {'command': 'npx', 'args': ['@upstash/context7-mcp']}),
+                            ('docs', {'type': 'http', 'url': 'https://mcp.context7.com/mcp'})):
+            self.assertNotIn('context7', self.copilot_servers({name: entry}))
+            self.assertEqual(self.copilot_servers()[name], entry)
+
+    def test_copilot_mcp_file_is_created_with_context7(self):
+        self.assertEqual(self.copilot_servers()['context7'], self.CONTEXT7)
 
     def test_doctor_reports_a_missing_engram_mcp(self):
         self.assertIn('engram MCP is not registered for Claude Code', self.run_harness('doctor'))
@@ -1267,7 +1306,36 @@ class Doctor(unittest.TestCase):
         self.assertIn('github.copilot.chat.instructions points to a missing file: ~/.config/copilot/instructions.md',
                       self.doctor())
 
+    def test_context7_missing_for_codex_or_copilot(self):
+        finding = lambda agent: f'context7 MCP is not registered for {agent}'
+        choice = self.home / '.agent-harness' / 'agents'
+        choice.parent.mkdir()
+        choice.write_text('claude\n', encoding='utf-8')
+        self.assertNotIn('context7', self.doctor())  # Claude Code gets Context7 as a claude.ai connector: never checked
+        choice.unlink()
+        (self.home / '.copilot').mkdir()
+        out = self.doctor()
+        self.assertIn(finding('Codex'), out)
+        self.assertIn(finding('Copilot'), out)
+        (self.home / '.codex').mkdir()
+        (self.home / '.codex' / 'config.toml').write_text('[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n',
+                                                          encoding='utf-8', newline='\n')
+        (self.home / '.copilot' / 'mcp-config.json').write_text(
+            json.dumps({'mcpServers': {'docs': {'url': 'https://mcp.context7.com/mcp'}}}), encoding='utf-8', newline='\n')
+        self.assertNotIn('context7 MCP', self.doctor())
+        (self.home / '.copilot' / 'mcp-config.json').write_text('{"mcpServers": null}', encoding='utf-8')
+        self.assertIn(finding('Copilot'), self.doctor())  # an empty server table is a missing server, not a crash
+        (self.home / '.copilot' / 'mcp-config.json').unlink()
+        user = self.home / 'Library/Application Support/Code/User'
+        user.mkdir(parents=True)
+        (user / 'mcp.json').write_text('{\n  // comment\n  "servers": {"io.github.upstash/context7": {}}\n}\n',
+                                       encoding='utf-8', newline='\n')
+        self.assertNotIn('context7 MCP', self.doctor())
+
     def test_clean_setup_has_no_findings(self):
+        (self.home / '.codex').mkdir()
+        (self.home / '.codex' / 'config.toml').write_text('[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n',
+                                                          encoding='utf-8', newline='\n')
         self.assertIn('no findings', self.doctor())
 
 
@@ -1564,6 +1632,15 @@ class Uninstall(unittest.TestCase):
         self.assertEqual((self.home / '.agent-harness' / 'agents').read_text(encoding='utf-8').split(), ['codex'])
         result = run('check', '--home', str(self.home))
         self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'), result.stdout)
+
+    def test_uninstalling_copilot_leaves_its_mcp_servers(self):
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'claude,codex,copilot')
+        config = self.home / '.copilot' / 'mcp-config.json'
+        servers = json.loads(config.read_text(encoding='utf-8'))['mcpServers']
+        self.assertIn('context7', servers)
+        self.uninstall('--agents', 'copilot')
+        self.assertEqual(json.loads(config.read_text(encoding='utf-8'))['mcpServers'], servers)
 
     def test_taking_the_last_agent_off_clears_shared_files_and_restore_brings_them_back(self):
         third_party = self.home / '.agents' / 'skills' / 'my-skill' / 'SKILL.md'

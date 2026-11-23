@@ -372,14 +372,32 @@ def codex_config(home, register=False):
 COPILOT_MCP = '.copilot/mcp-config.json'
 
 
+def has_context7(servers):
+    """Any entry named for Context7 or served from context7.com counts, whatever its transport."""
+    return any('context7' in name.lower() or isinstance(s, dict) and 'context7.com' in str(s.get('url', ''))
+               for name, s in (servers or {}).items())
+
+
+def copilot_has_context7(home, servers):
+    """Copilot gets Context7 from its own MCP file or from VS Code's user mcp.json."""
+    user = home / (vscode_user(home) or VSCODE_USER[0]) / 'mcp.json'
+    # ponytail: VS Code's mcp.json is JSONC, so a text match stands in for parsing it
+    return has_context7(servers) or user.is_file() and 'context7' in user.read_text(encoding='utf-8').lower()
+
+
 def copilot_mcp(home):
-    """Add Engram to Copilot's MCP servers when it is missing; None when there is nothing to add."""
+    """Add Engram and Context7 (no API key needed) to Copilot's MCP servers when missing; None when there is nothing to add."""
     path, engram = home / COPILOT_MCP, shutil.which('engram')
     data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
     servers = data.setdefault('mcpServers', {})
-    if 'engram' in servers or not engram:
-        return None  # an entry of the user's own stays as written
-    servers['engram'] = {'type': 'local', 'command': engram, 'args': ['mcp', '--tools=agent'], 'tools': ['*']}
+    add = {}  # an entry of the user's own stays as written
+    if 'engram' not in servers and engram:
+        add['engram'] = {'type': 'local', 'command': engram, 'args': ['mcp', '--tools=agent'], 'tools': ['*']}
+    if not copilot_has_context7(home, servers):
+        add['context7'] = {'type': 'http', 'url': 'https://mcp.context7.com/mcp', 'tools': ['*']}
+    if not add:
+        return None
+    servers.update(add)
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
@@ -1227,6 +1245,22 @@ def doctor(home, agent=None):
                         '(run `bin/harness install` and restart Claude Code)')
     if 'codex' in agents:
         findings += untrusted_codex_hooks(home)
+        try:
+            servers = tomllib.loads(codex.read_text(encoding='utf-8')).get('mcp_servers', {}) if codex.is_file() else {}
+            if not has_context7(servers):
+                findings.append(f'context7 MCP is not registered for Codex, so the documentation rule cannot be followed '
+                                f'(add [mcp_servers.context7] with url = "https://mcp.context7.com/mcp" to {codex})')
+        except ValueError:
+            pass  # unparseable: `check` reports it
+    if 'copilot' in agents:
+        mcp = home / COPILOT_MCP
+        try:
+            servers = json.loads(mcp.read_text(encoding='utf-8')).get('mcpServers') if mcp.is_file() else {}
+            if not copilot_has_context7(home, servers):
+                findings.append(f'context7 MCP is not registered for Copilot, so the documentation rule cannot be followed '
+                                f'(run `bin/harness install`, or add it to {mcp})')
+        except ValueError:
+            pass  # unparseable: `check` reports it
     if cg_update := codegraph_update():
         findings.append(f'codegraph update available: {cg_update} (npm install -g @colbymchenry/codegraph, '
                         'then `codegraph index` in each indexed repo)')

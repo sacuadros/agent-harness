@@ -9,5 +9,6 @@
 - Before any fix, check whether it adds a state, command, flag, gate, or second copy of existing truth. If it does, redesign it; the right fix often deletes or relaxes something.
 - Do not guess what the user wants. Settle what you can from the code, docs, and conversation; when a requirement, scope, or product decision stays open, ask instead of assuming. Implementation choices within the request stay yours.
 - When sources disagree, tests state the intent and code shows the behavior; docs count only where code or a test confirms them. Untested behavior that could be intent or accident stays open.
+- Before writing code against a library, framework, SDK, CLI, or cloud API, read its current documentation with Context7. If Context7 is unavailable, use the official documentation and say so.
 - Propose improvements instead of applying them. When you notice something worth doing outside the request, mention it in one line and leave it undone unless the user says to apply it.
 - Consolidate only demonstrated duplicates with equivalent scope, checks, and enforcement. Similar names or goals do not prove redundancy. Investigate false positives without silently disabling the control.
