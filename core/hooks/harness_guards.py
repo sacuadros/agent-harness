@@ -226,10 +226,13 @@ def config_path(path):
 def edited_paths(data):
     tool_input = data.get('tool_input') if isinstance(data.get('tool_input'), dict) else {}
     if data.get('tool_name') != 'apply_patch':
-        path = tool_input.get('file_path') or tool_input.get('notebook_path') or ''
-        return [path if isinstance(path, str) else '']  # MCP and Copilot tools may send lists or objects
+        # VS Code's Copilot names the file filePath, and lists several under replacements[].
+        many = tool_input.get('replacements')
+        paths = [tool_input.get('file_path') or tool_input.get('notebook_path') or tool_input.get('filePath'),
+                 *(r.get('filePath') for r in (many if isinstance(many, list) else []) if isinstance(r, dict))]
+        return [p for p in paths if isinstance(p, str)]  # MCP and Copilot tools may send lists or objects
     cwd = Path(data.get('cwd') if isinstance(data.get('cwd'), str) else '.')
-    patch = tool_input.get('command')
+    patch = tool_input.get('command') or tool_input.get('input')  # Codex: command; VS Code's Copilot: input
     return [str(cwd / p.strip()) for p in PATCH_FILE.findall(patch if isinstance(patch, str) else '')]
 
 
@@ -469,6 +472,17 @@ def selftest():
         rel = {'session_id': 'codex5678', 'cwd': str(HOME / '.codex'), 'tool_name': 'apply_patch',
                'tool_input': {'command': '*** Begin Patch\n*** Update File: AGENTS.md\n*** End Patch\n'}}
         assert backup(rel, tmp)['systemMessage']
+        vscode = {'session_id': 'vscode123', 'tool_name': 'replace_string_in_file', 'tool_input': {'filePath': str(agents)}}
+        assert backup(vscode, tmp)['systemMessage']
+    # VS Code's Copilot sends snake_case events with its own argument names: filePath, replacements[], patch `input`.
+    assert edited_paths({'tool_name': 'create_file', 'tool_input': {'filePath': '/h/a.md'}}) == ['/h/a.md']
+    multi = {'tool_name': 'multi_replace_string_in_file',
+             'tool_input': {'replacements': [{'filePath': '/h/a.md'}, {'filePath': '/h/b.md'}]}}
+    assert edited_paths(multi) == ['/h/a.md', '/h/b.md']
+    crlf = {'tool_name': 'apply_patch', 'cwd': '/h', 'tool_input': {'input': '*** Update File: /h/a.md\r\n@@\r\n'}}
+    assert edited_paths(crlf) == ['/h/a.md']
+    for odd in ({'replacements': 'nope'}, {'replacements': [3, {'filePath': ['x']}]}, {'filePath': 7}):
+        assert backup({'tool_name': 'x', 'tool_input': odd}, Path(tempfile.mkdtemp())) is None, odd
     print('harness_guards selftest: ok')
 
 
