@@ -211,7 +211,7 @@ def _bash_decision(cmd):
 def config_path(path):
     try:
         p = Path(path).expanduser().resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: a NUL byte in the path, which names no file
         return None
     for root in CONFIG_ROOTS:
         try:
@@ -481,8 +481,11 @@ def selftest():
     assert edited_paths(multi) == ['/h/a.md', '/h/b.md']
     crlf = {'tool_name': 'apply_patch', 'cwd': '/h', 'tool_input': {'input': '*** Update File: /h/a.md\r\n@@\r\n'}}
     assert edited_paths(crlf) == [str(Path('/h/a.md'))]  # a patch path is joined to cwd, so Windows gives backslashes
-    for odd in ({'replacements': 'nope'}, {'replacements': [3, {'filePath': ['x']}]}, {'filePath': 7}):
+    for odd in ({'replacements': 'nope'}, {'replacements': [3, {'filePath': ['x']}]}, {'filePath': 7},
+                {'file_path': '/h/a\x00b'}, {'filePath': '~/a\x00'}):  # a NUL byte names no file
         assert backup({'tool_name': 'x', 'tool_input': odd}, Path(tempfile.mkdtemp())) is None, odd
+    nul_patch = {'tool_name': 'apply_patch', 'cwd': '/h', 'tool_input': {'command': '*** Update File: a\x00b\n'}}
+    assert backup(nul_patch, Path(tempfile.mkdtemp())) is None
     print('harness_guards selftest: ok')
 
 
