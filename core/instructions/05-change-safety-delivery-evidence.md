@@ -6,10 +6,9 @@
   - **Basic**: one focused check and exact-diff readback.
   - **Standard**: the smallest useful regression check; broaden validation or review only when evidence warrants it.
   - **Critical**: the Critical rungs of the `verification-ladders` skill for every surface the change touches, and one fresh independent review when permitted and useful.
-- Apply the smallest assurance set that covers the risk. A higher level replaces rather than stacks on lower-level process checklists; never duplicate equivalent checks or reviews.
-- Once the authorized scope, assurance-required checks, and applicable quality guardrails are satisfied, deliver the result. Add or repeat research, checks, reviews, or artifacts only for a specific unresolved evidence gap, a relevant change, or a separately authorized delivery gate.
+- Apply the smallest assurance set that covers the risk: a higher level replaces rather than stacks on lower-level checklists, and equivalent checks or reviews are never duplicated. Once the authorized scope, required checks, and applicable guardrails are satisfied, deliver the result. Add or repeat research, checks, reviews, or artifacts only for a specific unresolved evidence gap, a relevant change, or a separately authorized delivery gate.
 - Evidence applies only to the exact candidate. Reuse it only while content, paths, base branch, target environment, and delivery range remain unchanged; otherwise invalidate and rerun the affected checks or review.
 - After a cwd, worktree, Git, merge, test-environment, or unknown-mutation incident, inspect repository and provider state before retrying. Name a recovery command only when it can resolve the current block.
-- Use Conventional Commits and plan commits as work units (see the `work-unit-commits` skill). Never add `Co-Authored-By` trailers or any AI attribution to commits or PR descriptions.
-- Before commit, push, or PR, revalidate the intended candidate and focused checks. Commit, push, PR, merge, publish, and deploy remain separately authorized.
-- Report exact files, checks, findings, unverified aspects, and local, committed, pushed, merged, and deployed states separately.
+- Commits are Conventional Commits planned as work units (`work-unit-commits` skill), with no `Co-Authored-By` trailers or other AI attribution in commits or PR descriptions.
+- Before commit, push, or PR, revalidate the intended candidate and focused checks.
+- Report the verified outcome, exact files, checks run, every failed, skipped, or pending check, findings, unverified aspects, and local, committed, pushed, merged, and deployed states separately.

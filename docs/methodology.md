@@ -178,6 +178,40 @@ flowchart TD
     F --> G
 ```
 
+## Instruction size
+
+### Why
+
+Every agent loads the instructions in `core/instructions/` in every session, so each sentence there is paid for in every turn. Evidence and vendor guidance point the same way:
+
+- Following many instructions at once gets harder as their number grows. In IFScale the best models reach only 68% accuracy at 500 simultaneous instructions ([arXiv 2507.11538](https://arxiv.org/abs/2507.11538)). That is a synthetic task on 2025 models, so it shows a trend, not a threshold.
+- Claude Code's documentation asks to "target under 200 lines per CLAUDE.md file" because longer files "reduce adherence" ([memory](https://code.claude.com/docs/en/memory)), and says "If something has to happen every time, make it a hook" ([best practices](https://code.claude.com/docs/en/best-practices)).
+- Agents change code that needs no change: in FixedBench they propose unwanted changes in 35 to 65% of tasks where nothing had to change ([arXiv 2605.07769](https://arxiv.org/abs/2605.07769)). In another benchmark, removing an explicit consent declaration raised out-of-scope actions from 0.0% to 17.1% ([arXiv 2605.18583](https://arxiv.org/abs/2605.18583)).
+
+No controlled study comparing hooks with written rules was found, so the split below follows the vendors' guidance, not a measurement.
+
+### How
+
+The instructions state each obligation once, in the section where it belongs, and spend one clause on what a hook already enforces:
+
+| Before | After |
+|---|---|
+| Commit and push approval stated five times | Once, in Slice Flow's pace step |
+| Commit format, worktree placement and forbidden CodeGraph commands explained at length | One clause each; the guard's own message carries the rest |
+| "Before saying done, call `mem_session_summary`" | Removed: the Engram server says ordinary completion does not need it. The Stop hook still asks for a save after substantive work |
+| Save memory "after any decision, bugfix, discovery" | Save verified durable conclusions, grouped by topic, not every event |
+| Backlog file layout and the test-by-test mechanics inside Slice Flow | Left to the `backlog` and `pair` skills, which load when needed |
+| (nothing) | "No change is a valid outcome": when the code already does what was asked, say so and change nothing |
+
+Rendered size per agent went from about 22,800 characters (3,300 words, 199 lines) to about 19,900 (2,900 words, 167 lines). A test keeps each agent's instructions under 20,500 characters so they do not grow back unnoticed.
+
+Architecture, security, dependency, documentation and anti-slop guidance stay as skills that load on demand, which is what the vendors recommend for specialized guidance.
+
+### Limits
+
+- The trim is 13%, not more: what remains are distinct rules, and going lower means dropping rules.
+- No test can show that the agent follows the shorter text better. The signal available without running agents headless is how often the hooks block or deny in real sessions, counted before and after.
+
 ## Considered and not done
 
 | Idea | Decision | Reason |

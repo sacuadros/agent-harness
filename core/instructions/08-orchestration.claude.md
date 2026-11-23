@@ -1,23 +1,21 @@
 ## Native {{agent}} Orchestration
 
 - The main {{agent}} session is the orchestrator and owns scope, decisions, task boundaries, user communication, approvals, Git delivery, and the final user-facing evidence report.
-- Keep bounded and sequential work in the main session. Do not delegate trivial changes or work whose coordination cost exceeds its execution cost.
-- Work inline by default. Delegate only for one of these named reasons, and name the reason in one line when you do; once a reason applies, delegating is mandatory unless tool availability, permissions, or shared state make it unsafe:
+- Work inline by default: keep bounded, sequential, and trivial work in the main session, and do not delegate work whose coordination cost exceeds its execution cost. Delegate only for one of these named reasons, and name the reason in one line when you do; once a reason applies, delegating is mandatory unless tool availability, permissions, or shared state make it unsafe:
   - **Exploration**: answering needs more than about 5 sequential lookups in material you will not edit. One read-only explorer returns at most about 2k tokens with `path:line` evidence, and you spot-check one claim.
   - **Parallel writers**: two or more independent units with disjoint files, each above about 100 changed lines. Units of about 100 changed lines or less stay inline.
   - **Noisy checks**: long or noisy tests, logs, or scans whose output would flood the main context.
   - **Independent review**: only when the Risk line names an item (Critical assurance).
   - **Context backstop**: past about 150k tokens of context, hand the next bounded unit to a subagent.
 - When a reason applies, launch the smallest useful set in a single message so they run concurrently, normally one per independent lane, and continue useful local work while they run.
-- Prefer parallel read-only exploration (`Explore` agent), documentation research, test execution, triage, and review. For implementation, assign one writer per file or ownership boundary and never allow overlapping edits.
-- Route by responsibility only after delegation is warranted. Keep small or sequential work in the main session; do not delegate merely to select a cheaper model.
+- Use the `Explore` agent for read-only exploration. For implementation, assign one writer per file or ownership boundary and never allow overlapping edits.
+- Route by responsibility only after delegation is warranted; do not delegate merely to select a cheaper model.
 - Use `implementation-worker` (sonnet) for bounded implementation with exclusive file ownership; `test-runner` (haiku) for prescribed long or noisy checks and factual result classification; `independent-reviewer` (opus) for the independent review required by assurance. Do not send ambiguous debugging or critical judgment to the test runner just because it runs tests.
 - For an especially difficult analysis that needs the strongest model, use a bounded `general-purpose` agent with an explicit `model: "opus"` and the same review constraints. Critical assurance is never reduced by model routing.
-- Every subagent prompt must be a self-contained brief with only the necessary context. If a named agent is unavailable in this session, use `general-purpose` with the same model, ownership, and restrictions; otherwise report the limitation. Never silently substitute a model.
-- A blocked subagent returns evidence and its blocker to the main session. It does not create descendants, retry unchanged failures, or escalate models on its own. The main session authorizes only evidence-backed retries or escalation within the user's scope.
+- If a named agent is unavailable in this session, use `general-purpose` with the same model, ownership, and restrictions; otherwise report the limitation. Never silently substitute a model.
+- A blocked subagent returns evidence and its blocker to the main session. It does not retry unchanged failures or escalate models on its own. The main session authorizes only evidence-backed retries or escalation within the user's scope.
 - Do not change the user's main model, effort, or permission mode as a side effect of routing.
-- Give every subagent one bounded mission, required evidence, owned paths, exclusions, and an explicit return format. Quote the user's request verbatim unless a `.slices/` reference already carries it.
-- Subagents must not spawn additional agents unless the user explicitly authorizes recursive delegation.
+- Every subagent prompt is a self-contained brief with only the necessary context: one bounded mission, required evidence, owned paths, exclusions, and an explicit return format. Quote the user's request verbatim unless a `.slices/` reference already carries it.
+- Subagents must not spawn additional agents, commit, push, open PRs, merge, publish, deploy, or expand scope unless the user explicitly authorizes it.
 - Wait for required results, reconcile conflicts, and verify the exact final diff before reporting completion.
-- Subagents must not commit, push, open PRs, merge, publish, deploy, or expand scope unless explicitly authorized.
-- When a `.slices/` backlog is active, it remains the single planning authority. Brief subagents by reference (`.slices/<feature>.md`, slice B2, S3); they execute bounded research, tasks, checks, or reviews, report which `S#` they covered, and never create a parallel plan.
+- When a `.slices/` backlog is active, brief subagents by reference (`.slices/<feature>.md`, slice B2, S3); they execute bounded research, tasks, checks, or reviews, report which `S#` they covered, and never create a parallel plan.

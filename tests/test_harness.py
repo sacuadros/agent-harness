@@ -78,6 +78,28 @@ class SliceFlowPacing(unittest.TestCase):
             self.assertEqual(text.count('contracts others consume'), 1, agent)  # the risk items are listed once
             self.assertNotIn('Select assurance independently', text, agent)
 
+    def test_memory_saves_grouped_conclusions_without_a_summary_gate(self):
+        for agent in ('claude', 'codex', 'copilot'):
+            text = harness('render', agent)
+            self.assertNotIn('Before saying "done"', text, agent)
+            self.assertIn('grouped by topic', text, agent)
+
+    def test_no_change_is_a_valid_outcome(self):
+        for agent in ('claude', 'codex', 'copilot'):
+            self.assertIn('No change is a valid outcome', harness('render', agent), agent)
+
+    def test_commit_rules_are_stated_once(self):
+        for agent in ('claude', 'codex', 'copilot'):
+            text = harness('render', agent)
+            self.assertEqual(text.count('Commits and pushes always wait for the user'), 1, agent)
+            self.assertNotIn('remain separately authorized', text, agent)
+            self.assertLessEqual(text.count('Co-Authored-By'), 1, agent)
+
+    def test_rendered_instructions_stay_under_the_size_budget(self):
+        for agent in ('claude', 'codex', 'copilot'):
+            # About 22,800 before the trim. Deduplication alone reached about 20,000; going lower means dropping rules.
+            self.assertLessEqual(len(harness('render', agent)), 20500, agent)
+
     def test_skills_do_not_wait_or_commit_on_their_own(self):
         skills = REPO / 'core' / 'skills'
         self.assertIn('This is the only checkpoint before building', (skills / 'backlog' / 'SKILL.md').read_text(encoding='utf-8'))
