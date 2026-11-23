@@ -21,7 +21,7 @@ HOME = Path.home()
 MANAGED_SKILLS = {
     'backlog', 'story', 'pair', 'dependency-safety',
     'promote-project-convention', 'secure-development',
-    'software-architecture', 'unslop', 'work-unit-commits', 'chained-pr',
+    'software-architecture', 'unslop', 'work-unit-commits',
     'cognitive-doc-design', 'systematic-debugging', 'verification-ladders',
 }
 
@@ -113,6 +113,14 @@ class SliceFlowPacing(unittest.TestCase):
         pair = (skills / 'pair' / 'SKILL.md').read_text(encoding='utf-8')
         self.assertIn('Do not commit', pair)
         self.assertIn('commit, commit and push, or not yet', pair)
+
+    def test_skills_hand_off_to_the_skill_that_owns_the_problem(self):
+        # Nothing in the always-loaded instructions calls these skills, so the skill in use at that moment does.
+        skills = REPO / 'core' / 'skills'
+        for caller, owner in (('pair', 'systematic-debugging'), ('verification-ladders', 'secure-development'),
+                              ('story', 'software-architecture')):
+            self.assertIn(f'`{owner}`', (skills / caller / 'SKILL.md').read_text(encoding='utf-8'), caller)
+            self.assertTrue((skills / owner / 'SKILL.md').is_file(), owner)
 
 
 class Restore(unittest.TestCase):
@@ -506,11 +514,11 @@ class Skills(unittest.TestCase):
         self.assertEqual(len(moved), 1)
 
     def test_old_gentle_ai_copy_in_agents_skills_is_replaced(self):
-        old = self.home / '.agents' / 'skills' / 'chained-pr' / 'SKILL.md'
+        old = self.home / '.agents' / 'skills' / 'work-unit-commits' / 'SKILL.md'
         old.write_text('gentle-ai\n', encoding='utf-8', newline='\n')
         harness('install', '--home', str(self.home))
-        self.assertEqual(old.read_bytes(), (REPO / 'core' / 'skills' / 'chained-pr' / 'SKILL.md').read_bytes())
-        moved = list((self.home / '.agent-harness' / 'backups').glob('*/.agents/skills/chained-pr/SKILL.md'))
+        self.assertEqual(old.read_bytes(), (REPO / 'core' / 'skills' / 'work-unit-commits' / 'SKILL.md').read_bytes())
+        moved = list((self.home / '.agent-harness' / 'backups').glob('*/.agents/skills/work-unit-commits/SKILL.md'))
         self.assertEqual([m.read_text(encoding='utf-8') for m in moved], ['gentle-ai\n'])
         result = run('check', '--home', str(self.home))
         self.assertEqual((result.returncode, result.stdout.strip()), (0, 'ok'), result.stdout)

@@ -72,7 +72,29 @@ flowchart LR
 
 ## Skills that left
 
-The harness no longer installs `performance-marketing-senior`, `seo-copy-senior`, and `brand-graphic-design`. They are not part of building software, and every installed skill adds its description to the context of every session. `install` moves the installed copies to the backup folder.
+The harness no longer installs `performance-marketing-senior`, `seo-copy-senior`, `brand-graphic-design`, and `chained-pr`. `install` moves the installed copies to the backup folder.
+
+- The first three are not part of building software, and every installed skill adds its description to the context of every session. `seo-copy-senior` was in use, so it was tested before staying out: the same SEO task, with and without the skill, on two models. Without it, neither model invented traffic figures, search volumes or a testimonial, which were the things the skill forbade. What the skill added was a delivery format and a habit of checking the primary source.
+- `chained-pr` had no use in any of the three agents and no instruction called it. `work-unit-commits` still explains when a change should be split into chained pull requests.
+
+## Skills that call each other
+
+### Why
+
+Counting real sessions showed three skills that almost never loaded in Claude Code: `systematic-debugging` (0 uses), `software-architecture` (0) and `secure-development` (1). Nothing in the instructions or in another skill sent the agent to them, so they depended on the agent remembering. Codex did load them, which shows they are useful when reached.
+
+### How
+
+The skill that is already loaded at the moment of need names the one that owns the problem. This costs nothing in the always-loaded instructions.
+
+```mermaid
+flowchart LR
+    P[pair: the same failure twice] --> D[systematic-debugging:<br/>find the root cause before a third attempt]
+    V[verification-ladders: the risk item is security] --> S[secure-development:<br/>the controls to verify]
+    T[story: the slice changes a boundary,<br/>a contract or a data flow] --> A[software-architecture]
+```
+
+A test checks that each caller still names its target and that the target exists.
 
 ## Evidence gate
 

@@ -19,7 +19,7 @@ Continue through the test list without waiting. When the user says "pair", stop 
 
 ## Alarms: stop and report
 
-- **Loop:** the same failure twice after a fix attempt.
+- **Loop:** the same failure twice after a fix attempt. Load the `systematic-debugging` skill and find the root cause before a third attempt; report if it stays unsolved.
 - **Scope creep:** code, fields, endpoints, abstractions, or files that `## Now` (for small work, the user's request) does not need, or a contract with no `S#`. Remove them or ask.
 - **Test cheating:** editing, skipping, deleting, or weakening a test, or special-casing test input, to get green.
 

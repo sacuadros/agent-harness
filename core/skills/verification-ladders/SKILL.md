@@ -45,4 +45,5 @@ For each surface: the rung reached, the command, and its result. List every skip
 
 - Generate and compare screenshots in the same environment as the baselines; rendering changes with the operating system, fonts, and hardware.
 - Stop repairing after the same failure twice: diagnose the root cause (`systematic-debugging`) instead of trying again.
+- When the risk item is security, load the `secure-development` skill for the controls to verify.
 - Never weaken, skip, or delete a check to reach a rung.

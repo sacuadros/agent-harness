@@ -9,7 +9,7 @@ Detail one slice, the next unchecked one in `.slices/<feature>.md` unless the us
 
 ## Steps
 
-1. Read the slice and its `S#`. Read only the code needed to know the current behavior (CodeGraph first in indexed repos).
+1. Read the slice and its `S#`. Read only the code needed to know the current behavior (CodeGraph first in indexed repos). When the slice changes a system boundary, a service contract, or a data flow, load the `software-architecture` skill first.
 2. List the ambiguities and settle each from the code, docs, and conversation. Stop and ask about any that stay open, all in one round, with your proposal as the first option.
 3. Write `## Now` in the working file:
 
