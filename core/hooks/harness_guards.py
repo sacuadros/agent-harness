@@ -480,7 +480,7 @@ def selftest():
              'tool_input': {'replacements': [{'filePath': '/h/a.md'}, {'filePath': '/h/b.md'}]}}
     assert edited_paths(multi) == ['/h/a.md', '/h/b.md']
     crlf = {'tool_name': 'apply_patch', 'cwd': '/h', 'tool_input': {'input': '*** Update File: /h/a.md\r\n@@\r\n'}}
-    assert edited_paths(crlf) == ['/h/a.md']
+    assert edited_paths(crlf) == [str(Path('/h/a.md'))]  # a patch path is joined to cwd, so Windows gives backslashes
     for odd in ({'replacements': 'nope'}, {'replacements': [3, {'filePath': ['x']}]}, {'filePath': 7}):
         assert backup({'tool_name': 'x', 'tool_input': odd}, Path(tempfile.mkdtemp())) is None, odd
     print('harness_guards selftest: ok')
