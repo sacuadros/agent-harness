@@ -2,10 +2,7 @@
 
 When answering structural or codebase questions, use CodeGraph before broad filesystem searches. This is a hard ordering rule for repo maps, architecture, call flow, dependencies, symbol references, impact analysis, and “how does X work” questions.
 
-CodeGraph-aware worktree placement:
-
-- Create Git worktrees that may need CodeGraph under the user's home directory, such as `<repo-parent>/<repo-name>-worktrees/<worktree-name>`, never under `/tmp`.
-- Every worktree needs its own `.codegraph/` index. Never copy, symlink, or reuse another checkout's index.
+Every Git worktree needs its own `.codegraph/` index. Never copy, symlink, or reuse another checkout's index.
 
 CodeGraph intelligence surface:
 

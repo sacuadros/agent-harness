@@ -23,6 +23,14 @@ allow = [
   "mcp__plugin_engram_engram__mem_capture_passive",
 ]
 
+# OS-level sandbox, written only on a PC whose ~/.agent-harness/config.toml has `sandbox = true`.
+[sandbox]
+# Stores of private keys and cloud secrets. The token files of gh, kubectl and docker stay readable:
+# the agent's own calls to those CLIs read them, and harness_guards.py denies printing them.
+deny_read = ["~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc"]
+# git over SSH fails inside Claude Code's sandbox on macOS, so git's network commands run outside it.
+excluded_commands = ["git fetch *", "git pull *", "git push *"]
+
 [codex]
 # Secrets that must come from the environment (Keychain via a LaunchAgent), never from config.toml.
 remove_env = ["ENGRAM_CLOUD_TOKEN"]

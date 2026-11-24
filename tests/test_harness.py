@@ -22,7 +22,7 @@ MANAGED_SKILLS = {
     'backlog', 'story', 'pair', 'dependency-safety',
     'promote-project-convention', 'secure-development',
     'software-architecture', 'unslop', 'work-unit-commits',
-    'cognitive-doc-design', 'systematic-debugging', 'verification-ladders',
+    'cognitive-doc-design', 'systematic-debugging', 'verification-ladders', 'pr-description',
 }
 
 
@@ -113,7 +113,7 @@ class SliceFlowPacing(unittest.TestCase):
     def test_rendered_instructions_stay_under_the_size_budget(self):
         for agent in ('claude', 'codex', 'copilot'):
             # About 22,800 before the trim. Deduplication alone reached about 20,000; going lower means dropping rules.
-            self.assertLessEqual(len(harness('render', agent)), 20500, agent)
+            self.assertLessEqual(len(harness('render', agent)), 20350, agent)
 
     def test_skills_do_not_wait_or_commit_on_their_own(self):
         skills = REPO / 'core' / 'skills'
@@ -127,7 +127,7 @@ class SliceFlowPacing(unittest.TestCase):
         # Nothing in the always-loaded instructions calls these skills, so the skill in use at that moment does.
         skills = REPO / 'core' / 'skills'
         for caller, owner in (('pair', 'systematic-debugging'), ('verification-ladders', 'secure-development'),
-                              ('story', 'software-architecture')):
+                              ('story', 'software-architecture'), ('work-unit-commits', 'pr-description')):
             self.assertIn(f'`{owner}`', (skills / caller / 'SKILL.md').read_text(encoding='utf-8'), caller)
             self.assertTrue((skills / owner / 'SKILL.md').is_file(), owner)
 
@@ -1512,6 +1512,26 @@ class Doctor(unittest.TestCase):
         self.assertIn('Copilot hook execution unverified', out)
         self.assertIn('disposable Copilot session', out)
 
+    def test_copilot_sandbox_is_reported_on_a_pc_that_opted_in(self):
+        # VS Code's settings.json is JSONC the harness never rewrites, so doctor names the lines to add.
+        user = self.home / '.config' / 'Code' / 'User'
+        user.mkdir(parents=True)
+        (self.home / '.copilot').mkdir()
+        harness('install', '--home', str(self.home), '--agents', 'copilot')
+        settings = user / 'settings.json'
+        settings.write_text('{\n  // mine\n  "editor.fontSize": 12,\n}\n', encoding='utf-8', newline='\n')
+        self.assertNotIn('chat.agent.sandbox', self.doctor())
+        (self.home / '.agent-harness' / 'config.toml').write_text('sandbox = true\n', encoding='utf-8', newline='\n')
+        out = self.doctor()
+        self.assertIn('VS Code agent sandbox is off', out)
+        self.assertIn('"chat.agent.sandbox.enabled": "on"', out)
+        denied = [(self.home / name).as_posix() for name in ('.ssh', '.aws', '.gnupg', '.netrc')]
+        self.assertIn(denied[0], out)
+        on = {'chat.agent.sandbox.enabled': 'on',
+              'chat.agent.sandbox.fileSystem.userConfiguredPaths': {'deniedPaths': denied}}
+        settings.write_text('// mine\n' + json.dumps(on), encoding='utf-8', newline='\n')
+        self.assertNotIn('chat.agent.sandbox', self.doctor())
+
     @unittest.skipIf(os.name == 'nt', 'the fake engram is a shell script')
     def test_engram_cloud_status(self):
         bin_dir = Path(tempfile.mkdtemp())
@@ -1706,6 +1726,38 @@ class Secrets(unittest.TestCase):
         self.assertIn('Read(**/.env)', permissions['ask'])
         self.assertEqual(len(permissions['deny']), len(set(permissions['deny'])))
         self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def opt_in_to_sandbox(self):
+        (self.home / '.agent-harness').mkdir(exist_ok=True)
+        (self.home / '.agent-harness' / 'config.toml').write_text('sandbox = true\n', encoding='utf-8', newline='\n')
+
+    def test_sandbox_is_written_only_on_a_pc_that_opts_in(self):
+        settings = self.home / '.claude' / 'settings.json'
+        harness('install', '--home', str(self.home))
+        self.assertNotIn('sandbox', json.loads(settings.read_text(encoding='utf-8')))
+        self.opt_in_to_sandbox()
+        harness('install', '--home', str(self.home))
+        sandbox = json.loads(settings.read_text(encoding='utf-8'))['sandbox']
+        self.assertIs(sandbox['enabled'], True)
+        self.assertIn({'path': '~/.ssh', 'mode': 'deny'}, sandbox['credentials']['files'])
+        self.assertIn({'path': '~/.aws', 'mode': 'deny'}, sandbox['credentials']['files'])
+        self.assertIn('git push *', sandbox['excludedCommands'])  # git over SSH fails inside the sandbox on macOS
+        self.assertIn('no changes', harness('install', '--home', str(self.home)))
+
+    def test_sandbox_merge_keeps_user_entries(self):
+        settings = self.home / '.claude' / 'settings.json'
+        settings.parent.mkdir(parents=True)
+        mine = {'excludedCommands': ['docker *'], 'network': {'allowedDomains': ['example.com']},
+                'credentials': {'files': [{'path': '~/.ssh', 'mode': 'mask'}, {'path': '~/tokens', 'mode': 'deny'}]}}
+        settings.write_text(json.dumps({'sandbox': mine}), encoding='utf-8', newline='\n')
+        self.opt_in_to_sandbox()
+        harness('install', '--home', str(self.home))
+        sandbox = json.loads(settings.read_text(encoding='utf-8'))['sandbox']
+        self.assertEqual(sandbox['excludedCommands'][0], 'docker *')
+        self.assertEqual(sandbox['network'], mine['network'])
+        self.assertEqual(sandbox['credentials']['files'][:2], mine['credentials']['files'])
+        self.assertEqual([f['path'] for f in sandbox['credentials']['files']].count('~/.ssh'), 1)
+        self.assertIn({'path': '~/.aws', 'mode': 'deny'}, sandbox['credentials']['files'])
 
     def test_check_flags_literal_secrets_without_printing_them(self):
         harness('install', '--home', str(self.home))

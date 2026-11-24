@@ -63,6 +63,8 @@ Use work-unit commits as the foundation for chained PRs:
 3. Commit it with a Conventional Commit message.
 4. If the PR approaches 400 changed lines, promote commits or groups of commits into chained PRs.
 
+When the user asks for the PR itself, load the `pr-description` skill to write its description.
+
 ## Slice Relationship
 
 Each backlog slice should map cleanly to one or more work-unit commits (normally one per accepted test and its code) with a clear start state, a clear finished state, verification in the same unit, and a rollback that does not remove unrelated work. Count authored additions plus deletions (excluding generated files) for the ~400-line budget. After one honest slicing pass, if no cohesive split fits, report the overage instead of shrinking the code.

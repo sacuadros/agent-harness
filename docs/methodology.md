@@ -15,7 +15,7 @@ flowchart TD
     S --> P[pair: one failing test, minimal code, repeat]
     I --> V
     P --> V[Verification for the assurance level<br/>Critical: verification-ladders]
-    V --> G{Evidence gate at Stop:<br/>did a command run after the last code edit?}
+    V --> G{Evidence gate at Stop:<br/>did a command that can fail run after the last code edit?}
     G -- no --> V
     G -- yes --> X[Report with a Risk line<br/>commits and pushes wait for you]
 ```
@@ -92,6 +92,7 @@ flowchart LR
     P[pair: the same failure twice] --> D[systematic-debugging:<br/>find the root cause before a third attempt]
     V[verification-ladders: the risk item is security] --> S[secure-development:<br/>the controls to verify]
     T[story: the slice changes a boundary,<br/>a contract or a data flow] --> A[software-architecture]
+    W[work-unit-commits: the user asks for the PR] --> R[pr-description:<br/>before/after evidence and the human-review line]
 ```
 
 A test checks that each caller still names its target and that the target exists.
@@ -114,22 +115,22 @@ flowchart TD
     B -- yes --> Z[Let it stop]
     B -- no --> C{Code file edited this turn?}
     C -- no --> Z
-    C -- yes --> D{Shell command or subagent<br/>after the last code edit?}
+    C -- yes --> D{Command that can fail, or subagent,<br/>after the last code edit?}
     D -- yes --> Z
     D -- no --> E[Block once: run the focused check<br/>or say in one line why none applies]
     E --> F[Agent answers, turn stops again]
     F --> B
 ```
 
-The block message says how many code files the turn edited and that no command ran after the last edit. It asks for the focused check (test, build, or the command that shows the change works) or one line explaining why none applies. On the second stop `stop_hook_active` is set, so the gate never blocks twice. If the transcript cannot be read, the hook lets the turn stop.
+The block message says how many code files the turn edited and that no command that can fail ran after the last edit. It asks for the focused check (test, build, or the command that shows the change works) or one line explaining why none applies. On the second stop `stop_hook_active` is set, so the gate never blocks twice. If the transcript cannot be read, the hook lets the turn stop.
 
 What counts as code: any edited file except `.md`, `.mdx`, `.txt`, `.rst`, and anything under `.slices/`. Claude Code edits come from the `Edit`, `Write`, `MultiEdit` and `NotebookEdit` tools; Codex edits come from file-change items; Copilot edits come from `apply_patch`, `create_file`, `replace_string_in_file` and `multi_replace_string_in_file`. A Copilot edit whose file path cannot be read counts as code.
 
-What counts as verification: any shell command (`Bash`, `PowerShell`, or `run_in_terminal` in Copilot) or subagent call (`Agent` in Claude Code, subagent activity items in Codex, `runSubagent` and `execution_subagent` in Copilot) after the last code edit. A command before the last edit does not count, since the edit may have broken what it checked.
+What counts as verification: a shell command (`Bash`, `PowerShell`, or `run_in_terminal` in Copilot) with at least one part that is not read-only, or a subagent call (`Agent` in Claude Code, subagent activity items in Codex, `runSubagent` and `execution_subagent` in Copilot) after the last code edit. A command before the last edit does not count, since the edit may have broken what it checked. Read-only commands do not count either, because they pass whether or not the change works: `ls`, `cat`, `grep`, `git status`, `git diff` and the rest of the `READ_ONLY` list in the hook. `git status && pytest` counts, because one part can fail.
 
 ### Known limits
 
-- It does not check that the command is a test. `ls` after an edit satisfies the gate. The gate asks for evidence to exist, not for proof that it is good.
+- It does not check that the command is a test. `ls` after an edit no longer satisfies the gate, but `python3 -c pass` does. The read-only list is a list of names, so a repo whose real check is on it answers with the one-line reason.
 - Edits made through a shell command, and MCP tools that run commands, are not seen.
 - Copilot is covered through its `Stop` hook, called with `--copilot`. This was checked against the VS Code Copilot extension installed on one Mac: it accepts the `Stop` event name, reads hooks from `~/.copilot/hooks`, sends `transcript_path` and `stop_hook_active`, and reads the decision only inside `hookSpecificOutput`. The transcript reader was checked against real Copilot transcripts. The hook has not yet been seen firing in a live VS Code chat, where agent hooks are in preview.
 
@@ -261,7 +262,9 @@ The instructions state each obligation once, in the section where it belongs, an
 | Backlog file layout and the test-by-test mechanics inside Slice Flow | Left to the `backlog` and `pair` skills, which load when needed |
 | (nothing) | "No change is a valid outcome": when the code already does what was asked, say so and change nothing |
 
-Rendered size per agent went from about 22,800 characters (3,300 words, 199 lines) to about 19,900 (2,900 words, 167 lines). A test keeps each agent's instructions under 20,500 characters so they do not grow back unnoticed.
+Rendered size per agent went from about 22,800 characters (3,300 words, 199 lines) to about 19,900 (2,900 words, 167 lines). A later pass removed the worktree placement rule, which the guard enforces with a message that names the right folder, and brought the largest render to about 20,300. A test keeps each agent's instructions under 20,350 characters so they do not grow back unnoticed.
+
+Rules a hook enforces on frequent actions keep their one clause: the commit format and the CodeGraph order. Without it the agent learns the rule from a denied call in every session, which costs more than the sentence.
 
 Architecture, security, dependency, documentation and anti-slop guidance stay as skills that load on demand, which is what the vendors recommend for specialized guidance.
 

@@ -1,6 +1,6 @@
 """Claude Code hooks that enforce the evidence gate and CodeGraph usage.
 
-  evidence Stop hook: blocks once when a turn edited code and ran no command or subagent afterwards.
+  evidence Stop hook: blocks once when a turn edited code and ran no command that can fail, or subagent, afterwards.
   pretool  PreToolUse hook (Grep|Glob|Bash): denies broad search in a CodeGraph-indexed
            repo until the session has queried CodeGraph at least once.
   posttool / sessionend: record and clear Copilot's per-session CodeGraph use.
@@ -184,6 +184,22 @@ def code_paths(tool):
     return [p for p in paths if not p.lower().endswith(DOC_SUFFIXES) and '.slices' not in Path(p).parts]
 
 
+# Commands that pass whether or not the change works, so they are no evidence.
+# ponytail: a list of names, not a classifier; a repo whose real check is on it answers with the one-line reason.
+READ_ONLY = re.compile(r'(?i)(?:ls|ll|dir|cat|type|head|tail|less|more|wc|pwd|cd|echo|printf|stat|file|which|tree|date|true'
+                       r'|grep|egrep|rg|ag|find|fd|codegraph|get-content|gc|get-childitem|gci|get-location|select-string'
+                       r'|findstr|git\s+(?:-[Cc]\s+\S+\s+|-\S+\s+)*(?:status|diff|log|show|branch|rev-parse|ls-files|blame'
+                       r'|remote|grep))(?=\s|$)')
+
+
+def can_fail(tool):
+    if tool.get('name') not in SHELLS:
+        return tool.get('name') in ('Agent', 'Subagent')
+    cmd = str(tool.get('input', {}).get('command') or '')
+    # A command that cannot be read still counts: one missed ask beats a block the agent cannot answer.
+    return not cmd.strip() or any(seg.strip() and not READ_ONLY.match(seg.strip()) for seg in re.split(r'[;&|\n]+', cmd))
+
+
 def evidence_decision(data):
     if data.get('stop_hook_active'):
         return None
@@ -194,12 +210,12 @@ def evidence_decision(data):
             if code_paths(t):
                 files.update(code_paths(t))
                 last = i
-    if not files or any(t.get('name') in (*SHELLS, 'Agent', 'Subagent') for t in turn[last + 1:]):
+    if not files or any(can_fail(t) for t in turn[last + 1:]):
         return None
     n = len(files)
     return {'decision': 'block', 'reason': (
         f'Evidencia: este turno editó {n} archivo{"s" if n > 1 else ""} de código y no ejecutó ningún comando '
-        'después de la última edición. Corre la verificación enfocada (test, build o el comando que muestre que '
+        'que pueda fallar después de la última edición. Corre la verificación enfocada (test, build o el comando que muestre que '
         'funciona) o di en una línea por qué no aplica. No repitas la respuesta anterior.')}
 
 
@@ -317,10 +333,21 @@ def selftest():
     assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), ('Read', {}))}) is None
     assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), src), 'stop_hook_active': True}) is None
     assert evidence_decision({'transcript_path': '/nonexistent'}) is None
+    # A command that cannot fail is not evidence: only read-only commands after the edit still blocks.
+    for looked in ('ls -la', 'cat src/a.py', 'git status', 'git diff', 'git -C repo log --oneline | head -5',
+                   'grep -n foo src/a.py', 'cd src && ls', 'Get-Content src/a.py'):
+        path = transcript(('prompt', 'x'), src, ('Bash', {'command': looked}))
+        assert evidence_decision({'transcript_path': path})['decision'] == 'block', looked
+    for ran in ('pytest', 'cd app && npm test', 'git status && pytest', 'python3 -m unittest tests.test_x',
+                'make build', 'git commit -m "fix: x"', './run.sh'):
+        path = transcript(('prompt', 'x'), src, ('Bash', {'command': ran}))
+        assert evidence_decision({'transcript_path': path}) is None, ran
     cx_src = {'type': 'FileChange', 'changes': {'src/a.py': {'type': 'update', 'unified_diff': '+x\n'}}}
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src)})['decision'] == 'block'
     cx_run = {'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', 'pytest']}
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, cx_run)}) is None
+    cx_look = {'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', 'git status']}
+    assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, cx_look)})['decision'] == 'block'
     # A Codex subagent after the edit counts as verification.
     for delegated in ('SubAgentActivity', 'CollabAgentToolCall'):
         assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, {'type': delegated})}) is None, delegated

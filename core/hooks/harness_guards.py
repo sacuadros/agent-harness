@@ -1,7 +1,7 @@
 """Claude Code PreToolUse guards for the global CLAUDE.md delivery rules.
 
   bash    (matcher Bash) commit hygiene, remote/delivery operations, CodeGraph lifecycle,
-          worktrees under temporary directories.
+          worktrees under temporary directories, recursive deletes outside the project.
   backup  (matcher Edit|Write|MultiEdit|NotebookEdit) timestamped backup of global agent
           configuration before the first edit of each file in a session.
 
@@ -11,6 +11,8 @@ prompt cases live in ~/.codex/rules/default.rules. `backup` also reads apply_pat
 Run with `selftest` to check the rules. Fails closed: any unexpected error denies the action.
 Limit: Bash commands that write global config (sed -i, redirects) are not backed up."""
 import json
+import os
+import posixpath
 import re
 import shutil
 import sys
@@ -144,11 +146,52 @@ CODEX_PROMPTED = [p.replace(GIT, r'git\s+') for p, _ in REMOTE if p not in (RSYN
 PATCH_FILE = re.compile(r'^\*\*\* (?:Update|Delete) File: (.+)$', re.M)  # Codex apply_patch
 CODEGRAPH_INDEX = re.compile(SEG + r'codegraph\s+index\b')
 # Matched on normalize_paths(cmd), so Windows homes and %LOCALAPPDATA% already read ~/AppData/Local.
+TMP_ROOT = r'/tmp|/var/tmp|/private/tmp|/private/var/tmp|/(?:private/)?var/folders|~/AppData/Local/Temp|[a-z]:/Windows/Temp'
 TMP_WORKTREE = re.compile(SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:\S+\s+)?)*'
-                          r'(?:(?:/tmp|/var/tmp|/private/tmp|/private/var/tmp|/(?:private/)?var/folders'
-                          r'|~/AppData/Local/Temp|\$\{?(?:env:)?TE?MP\b\}?|%TE?MP%|[a-z]:/Windows/Temp)(?=[/\s;&|)]|$)'
+                          r'(?:(?:' + TMP_ROOT + r'|\$\{?(?:env:)?TE?MP\b\}?|%TE?MP%)(?=[/\s;&|)]|$)'
                           # macOS $TMPDIR ends in /, so "$TMPDIR"wt (quotes dropped) is a path; mktemp -d uses it.
                           r'|\$\{?TMPDIR|(?:\$\(\s*)?mktemp(?=[\s;&|)]|$))', re.I)
+
+
+RM_NAMES = {'rm', 'remove-item', 'ri', 'rmdir', 'rd', 'del', 'erase'}
+RM_RECURSIVE = re.compile(r'-(?=[a-zA-Z]*[rR])[dfiIPRrvWx]+|--recursive')  # -rf, -fR; not PowerShell's -Force
+DELETE_REASON = 'Regla global: un borrado recursivo fuera del proyecto requiere autorización explícita del usuario.'
+
+
+def deletes_outside(cmd, cwd=None):
+    """A recursive delete with a target outside the project (the nearest .git above cwd) and the temp folders.
+
+    Limits: relative targets are trusted, so `cd ~ && rm -rf x` passes; so do variables other than the
+    home ones, `find -delete` and `xargs rm`."""
+    cwd = Path(cwd) if isinstance(cwd, str) and cwd else Path.cwd()
+    root = None
+    # A separator inside quotes starts no command: blank it before the quotes are dropped.
+    cmd = re.sub(r'''"(?:\\.|[^"\\])*"|'[^']*\'''', lambda m: re.sub(r'[;&|\n]', ' ', m[0]), cmd)
+    for segment in re.split(r'[;&|\n]+', normalize_paths(cmd)):
+        words = [w for w in re.sub(r'^[\s$({!]+', '', segment).split() if not re.match(r'^\w+=', w)]
+        while words and words[0] in ('sudo', 'command', 'env', 'exec', 'then', 'do', 'else', 'time'):
+            words.pop(0)
+        if not words or words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') not in RM_NAMES:
+            continue
+        args = words[1:]
+        dashes = args.index('--') if '--' in args else len(args)
+        flags = [w for w in args[:dashes] if w.startswith('-')]
+        # PowerShell takes any prefix of -Recurse.
+        if not any(RM_RECURSIVE.fullmatch(w) or len(w) > 1 and '-recurse'.startswith(w.lower()) for w in flags):
+            continue
+        for target in [w for w in args[:dashes] if not w.startswith('-')] + args[dashes + 1:]:
+            # Git Bash spells a Windows home /c/Users/me, which normalize_paths leaves as /c~; /tmp/../etc is not temp.
+            target = posixpath.normpath(re.sub(r'^/[a-zA-Z](?=~)', '', target))
+            if not re.match(r'[/~]|[a-zA-Z]:/', target) and '..' not in target.split('/'):
+                continue
+            if re.match(r'(?:' + TMP_ROOT + r')(?:/|$)', target, re.I):
+                continue
+            if root is None:
+                root = next((p for p in (cwd, *cwd.parents) if (p / '.git').exists()), cwd)
+            path = Path(os.path.normpath(cwd / (str(HOME) + target[1:] if target.startswith('~') else target)))
+            if root not in path.parents:
+                return True
+    return False
 
 
 def decision(kind, reason):
@@ -175,8 +218,12 @@ def bash_decision(data, codex=False):
     tool_input = data.get('tool_input') if isinstance(data.get('tool_input'), dict) else {}
     mcp = str(data.get('tool_name', '')).startswith('mcp__')  # e.g. Desktop Commander's start_process
     cmd = tool_input.get('command') or (tool_input.get('input') if mcp else '')
-    out = _bash_decision(cmd if isinstance(cmd, str) else '')
+    cmd = cmd if isinstance(cmd, str) else ''
+    out = _bash_decision(cmd, data.get('cwd'))
     if codex and out and out['hookSpecificOutput']['permissionDecision'] == 'ask':
+        if deletes_outside(cmd, data.get('cwd')):  # execpolicy rules match commands, not paths
+            return decision('deny', DELETE_REASON + ' Codex no puede pedir aprobación aquí: pide al '
+                                                    'usuario que lo corra.')
         if mcp:  # execpolicy rules only see Codex's own shell tool, so nothing would ask
             return decision('deny', out['hookSpecificOutput']['permissionDecisionReason'] + ' Codex no pide '
                                     'aprobación en herramientas MCP: córrelo con su shell, que sí la pide.')
@@ -197,7 +244,7 @@ def bash_decision(data, codex=False):
     return out
 
 
-def _bash_decision(cmd):
+def _bash_decision(cmd, cwd=None):
     if reads_credentials(cmd):
         return decision('deny', 'Regla global: no leer credenciales (claves privadas, ~/.aws, '
                                 '~/.gnupg, tokens de CLI) ni imprimir secretos del Llavero. Pide al '
@@ -226,6 +273,8 @@ def _bash_decision(cmd):
         return decision('ask', 'Regla global: codegraph index solo para recuperar un índice '
                                'corrupto o tras una actualización de CodeGraph que pida '
                                'reindexar. Confirma que es el caso.')
+    if deletes_outside(cmd, cwd):
+        return decision('ask', DELETE_REASON)
     return None
 
 
@@ -345,6 +394,33 @@ def selftest():
     assert bash('git worktree add /tmp/wt feature') == 'deny'
     assert bash('git worktree add -b x ../repo-worktrees/x') is None
     assert bash('ls -la') is None
+
+    # A recursive delete asks only when it reaches outside the project and the temp folders.
+    def rm(cmd, codex=False):
+        out = bash_decision({'cwd': '/srv/proj/repo', 'tool_input': {'command': cmd}}, codex=codex)
+        return out and out['hookSpecificOutput']['permissionDecision']
+
+    for outside in ('rm -rf ~/Documents', 'rm -rf /srv/proj/other', 'rm -r ../other', 'rm -fR "$HOME/x"',
+                    'cd build && rm -rf /', 'sudo rm --recursive /etc/x', 'rm -rf /srv/proj/repo', 'rm -rf dist ~/x',
+                    'rm -rf -- ../x', r'Remove-Item -Recurse -Force C:\Users\me\old', 'Remove-Item ~/old -rec',
+                    '(rm -rf ~/x)', 'if [ -d ~/x ]; then rm -rf ~/x; fi'):
+        assert rm(outside) == 'ask', outside
+    for inside in ('rm -rf dist node_modules', 'rm -rf /srv/proj/repo/dist', 'rm -rf ./build/../dist',
+                   'rm -rf /tmp/x', 'rm -rf /private/tmp/claude-501/s/x', 'rm -rf /var/folders/1s/abc/T/x',
+                   'rm -rf "$TMPDIR/x"', r'Remove-Item -Recurse C:\Users\me\AppData\Local\Temp\x',
+                   'rm -f ~/notes.txt', 'rm ~/notes.txt', 'Remove-Item -Force ~/notes.txt',
+                   'echo "rm -rf ~/x"', 'git commit -m "fix: guard rm -rf ~/x"', 'grep -r foo ~/x'):
+        assert rm(inside) is None, inside
+    # Separators inside quotes start no command; a temp prefix that climbs out is not temp.
+    for quoted in ('git commit -m "fix: a; rm -rf ~/x"', 'echo "a && rm -rf ~/x"', "echo 'x | rm -rf /etc'"):
+        assert rm(quoted) is None, quoted
+        assert rm(quoted, codex=True) is None, quoted
+    assert rm('rm -rf /tmp/../etc') == 'ask'
+    assert rm('rm -rf "/srv/proj/other dir"') == 'ask'
+    gitbash = {'cwd': str(HOME / 'proj'), 'tool_input': {'command': 'rm -rf /c/Users/me/proj/dist'}}
+    assert bash_decision(gitbash) is None  # Git Bash spells C:\Users\me as /c/Users/me
+    assert rm('rm -rf ~/Documents', codex=True) == 'deny'  # Codex cannot ask, and its rules see no paths
+    assert rm('rm -rf dist', codex=True) is None
     for secret in ('cat ~/.ssh/id_ed25519', 'cp ~/.aws/credentials /tmp/x', 'base64 $HOME/.netrc',
                    'security find-generic-password -s engram-cloud-token -w',
                    'head ~/.codex/auth.json', 'gpg --export-secret-keys > k; cat ~/.gnupg/x'):

@@ -234,6 +234,14 @@ def hook_config(agent, home, standalone=False):
         for kind in ('allow', 'deny', 'ask'):
             rules = permissions.setdefault(kind, [])
             rules += [rule for rule in PERMISSIONS['claude'][kind] if rule not in rules]
+        if pc_config(home).get('sandbox'):  # opt-in per PC; without it the user's sandbox block is left alone
+            sandbox = data.setdefault('sandbox', {})
+            sandbox['enabled'] = True
+            excluded = sandbox.setdefault('excludedCommands', [])
+            excluded += [c for c in PERMISSIONS['sandbox']['excluded_commands'] if c not in excluded]
+            files = sandbox.setdefault('credentials', {}).setdefault('files', [])
+            listed = [f.get('path') for f in files]
+            files += [{'path': p, 'mode': 'deny'} for p in PERMISSIONS['sandbox']['deny_read'] if p not in listed]
     return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
 
 
@@ -392,16 +400,19 @@ def codex_context7_finding(config, servers):
             f'[mcp_servers.context7] with url = "https://mcp.context7.com/mcp" to {config}')
 
 
+def load_jsonc(path):
+    """VS Code's user files are JSON with comments and trailing commas; read them, never rewrite them."""
+    text = path.read_text(encoding='utf-8-sig')
+    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\r\n]*|/\*[\s\S]*?\*/', lambda m: m[1] or ' ', text)
+    return json.loads(re.sub(r'("(?:\\.|[^"\\])*")|,(?=\s*[}\]])', lambda m: m[1] or '', text))
+
+
 def vscode_mcp_servers(home):
     user = home / (vscode_user(home) or VSCODE_USER[0]) / 'mcp.json'
     if not user.is_file():
         return {}
     try:
-        text = user.read_text(encoding='utf-8-sig')
-        text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\r\n]*|/\*[\s\S]*?\*/',
-                      lambda m: m[1] or ' ', text)
-        text = re.sub(r'("(?:\\.|[^"\\])*")|,(?=\s*[}\]])', lambda m: m[1] or '', text)
-        data = json.loads(text)
+        data = load_jsonc(user)
         if not isinstance(data, dict) or not isinstance(data.get('servers', {}), dict):
             raise ValueError('servers must be an object')
         return data.get('servers', {})
@@ -890,7 +901,7 @@ def uninstall(home, agents, dry_run=False):
     else:
         choice_file(home).unlink(missing_ok=True)
     write_record(home, recorded(home) - set(whole))
-    print(f'kept your permission rules, plugin switches, and MCP servers; undo with: harness restore {backup_dir.name}')
+    print(f'kept your permission rules, plugin switches, sandbox settings, and MCP servers; undo with: harness restore {backup_dir.name}')
 
 
 def restore(home, stamp):
@@ -1277,6 +1288,20 @@ def doctor(home, agent=None):
             if not (home / path[2:]).exists():
                 findings.append(f'github.copilot.chat.instructions points to a missing file: {path} '
                                 f'(remove that entry from {vscode})')
+    if 'copilot' in agents and pc_config(home).get('sandbox'):  # install turns it on for Claude Code only
+        try:
+            user = load_jsonc(vscode) if vscode.is_file() else {}
+        except (OSError, ValueError):
+            user = {}
+        user = user if isinstance(user, dict) else {}
+        paths = user.get('chat.agent.sandbox.fileSystem.userConfiguredPaths')
+        have = paths.get('deniedPaths') or [] if isinstance(paths, dict) else []
+        denied = [(home / path[2:]).as_posix() for path in PERMISSIONS['sandbox']['deny_read']]  # VS Code wants absolute paths
+        if user.get('chat.agent.sandbox.enabled') != 'on' or any(path not in have for path in denied):
+            add = {'chat.agent.sandbox.enabled': 'on',
+                   'chat.agent.sandbox.fileSystem.userConfiguredPaths': {'deniedPaths': denied}}
+            findings.append(f'VS Code agent sandbox is off or leaves credential folders readable; add to {vscode}: '
+                            + json.dumps(add))
     seen, duplicates = set(), []
     for entry in os.environ.get('PATH', '').split(os.pathsep):
         if entry in seen and entry not in duplicates:

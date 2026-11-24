@@ -33,10 +33,10 @@ Copilot in VS Code currently receives `~/.agents/skills` through its default ski
 ## What the harness enforces
 
 - **Slice Flow instead of upfront specs.** Work starts as a backlog of one-line vertical slices, each refined just in time (`story`) and built test by test (`pair`). The user approves the backlog once; the agent then builds every slice and stops only for open requirements or decisions, alarms, or approvals. Commits and pushes always wait for the user. Saying "pair" or "con pausas" slows it down.
-- **Shared guards** (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution; approval before SSH, PR, publish, deploy, or a push that rewrites or deletes remote history; no reads of credential files or Keychain secrets; no CodeGraph lifecycle commands; and a backup before any edit to global agent config. The same rules apply to MCP tools that run commands, such as Desktop Commander. A guard that errors or cannot start blocks the action rather than allowing it.
+- **Shared guards** (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution; approval before SSH, PR, publish, deploy, a push that rewrites or deletes remote history, or a recursive delete that reaches outside the project and the temp folders (Codex, whose rules cannot see paths, denies that one); no reads of credential files or Keychain secrets; no CodeGraph lifecycle commands; and a backup before any edit to global agent config. The same rules apply to MCP tools that run commands, such as Desktop Commander. A guard that errors or cannot start blocks the action rather than allowing it.
 - **Least privilege by configuration.** Claude subagents cannot spawn their own (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), Copilot subagents get an explicit `tools:` list without `agent`, and Codex shell commands do not inherit `ENGRAM_CLOUD_TOKEN`, which only its Engram MCP server receives.
 - **Code-graph discipline** (`core/hooks/enforce_memory_graph.py`) in Claude Code, Codex, and Copilot: query CodeGraph before broad searches in indexed repositories. In Copilot, CodeGraph runs from the terminal; these hooks have not been observed firing inside VS Code, where agent hooks are still in preview.
-- **Evidence gate** (`evidence` mode of the same hook) in Claude Code, Codex, and Copilot. A turn that edited code and ran no command or subagent afterwards is asked once to run the focused check or explain why none applies. It does not verify that the command is a test, and edits made through the shell go unseen. Copilot is untested inside VS Code itself. Rationale and design: [`docs/methodology.md`](docs/methodology.md).
+- **Evidence gate** (`evidence` mode of the same hook) in Claude Code, Codex, and Copilot. A turn that edited code and afterwards ran no subagent and no command that can fail is asked once to run the focused check or explain why none applies. Read-only commands such as `ls`, `cat`, or `git status` do not count. It does not verify that the command is a test, and edits made through the shell go unseen. Copilot is untested inside VS Code itself. Rationale and design: [`docs/methodology.md`](docs/methodology.md).
 - **Context7 before library code.** Every agent's instructions require reading current documentation through Context7 before writing code against a library, framework, SDK, CLI, or cloud API, and saying so when it is unavailable. `install` adds the server to Copilot's `~/.copilot/mcp-config.json` when none is present, and `doctor` reports a Codex or Copilot setup without it. Claude Code is not checked, because it receives Context7 as a claude.ai connector that no local file shows. No hook enforces this rule.
 - **Delegation only for named reasons:** exploration, parallel writers, noisy checks, independent review, and context backstop.
 
@@ -111,7 +111,18 @@ Without a terminal or a saved choice, `install` covers Claude Code, Codex, and C
 ```toml
 python = "/opt/homebrew/bin/python3"                  # hook interpreter; default: python3 on PATH, py -3 on Windows
 engram_cloud_server = "https://engram.example.com"   # Engram cloud server; omit to keep Engram local
+sandbox = true                                        # OS-level sandbox; omit to leave it as it is
 ```
+
+### OS-level sandbox (opt-in)
+
+The guards match command text, so a form they do not foresee gets through. With `sandbox = true`, the operating system denies the read instead.
+
+- **Claude Code:** `install` turns on the Bash sandbox in `~/.claude/settings.json` and denies reads of the stores listed under `[sandbox]` in `core/permissions.toml` (SSH, AWS, GnuPG, and netrc). `git fetch`, `git pull`, and `git push` run outside it, because git over SSH fails inside the sandbox on macOS. Your own sandbox entries stay. Native Windows has no sandbox, and whether the Claude app's Code tab applies the setting is not documented.
+- **Copilot in VS Code:** `install` never rewrites VS Code's `settings.json`, so `doctor` prints the settings to add: `chat.agent.sandbox.enabled` and the denied folders.
+- **Codex:** unchanged. It already runs in `workspace-write`, which allows reads outside the workspace; denying them needs its permission profiles.
+
+Removing the line stops `install` from adding entries; it does not remove the block, because the harness cannot tell its entries from yours. A command that needs a denied store fails inside the sandbox and asks to run outside it.
 
 When `engram_cloud_server` is set, `install` gives Claude Code and Codex `ENGRAM_CLOUD_SERVER` and `ENGRAM_CLOUD_AUTOSYNC=1`, and installs the auto-enroll hook (`engram_auto_enroll.py`) that enrolls projects for sync. When it is absent, `install` removes both variables, the hook entries, and the script. The token is never stored in a file; set it as described below. `doctor` prints the cloud status and reports a missing token.
 
