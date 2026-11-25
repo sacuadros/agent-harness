@@ -1,6 +1,7 @@
 """Claude Code hooks that enforce the evidence gate and CodeGraph usage.
 
-  evidence Stop hook: blocks once when a turn edited code and ran no command that can fail, or subagent, afterwards.
+  evidence Stop hook: blocks once when a turn edited code and ran no command that can fail, or subagent, afterwards,
+           or edited a risk path and closed without naming the risk.
   pretool  PreToolUse hook (Grep|Glob|Bash): denies broad search in a CodeGraph-indexed
            repo until the session has queried CodeGraph at least once.
   posttool / sessionend: record and clear Copilot's per-session CodeGraph use.
@@ -188,7 +189,7 @@ def code_paths(tool):
 # ponytail: a list of names, not a classifier; a repo whose real check is on it answers with the one-line reason.
 READ_ONLY = re.compile(r'(?i)(?:ls|ll|dir|cat|type|head|tail|less|more|wc|pwd|cd|echo|printf|stat|file|which|tree|date|true'
                        r'|grep|egrep|rg|ag|find|fd|codegraph|get-content|gc|get-childitem|gci|get-location|select-string'
-                       r'|findstr|git\s+(?:-[Cc]\s+\S+\s+|-\S+\s+)*(?:status|diff|log|show|branch|rev-parse|ls-files|blame'
+                       r'|findstr|git\s+(?:-[Cc]\s+\S+\s+|-(?![Cc]\s)\S+\s+)*(?:status|diff|log|show|branch|rev-parse|ls-files|blame'
                        r'|remote|grep))(?=\s|$)')
 
 
@@ -210,13 +211,66 @@ def evidence_decision(data):
             if code_paths(t):
                 files.update(code_paths(t))
                 last = i
-    if not files or any(can_fail(t) for t in turn[last + 1:]):
+    if not files:
         return None
-    n = len(files)
-    return {'decision': 'block', 'reason': (
-        f'Evidencia: este turno editó {n} archivo{"s" if n > 1 else ""} de código y no ejecutó ningún comando '
-        'que pueda fallar después de la última edición. Corre la verificación enfocada (test, build o el comando que muestre que '
-        'funciona) o di en una línea por qué no aplica. No repitas la respuesta anterior.')}
+    reasons = []
+    if not any(can_fail(t) for t in turn[last + 1:]):
+        n = len(files)
+        reasons.append(
+            f'Evidencia: este turno editó {n} archivo{"s" if n > 1 else ""} de código y no ejecutó ningún comando '
+            'que pueda fallar después de la última edición. Corre la verificación enfocada (test, build o el comando que '
+            'muestre que funciona) o di en una línea por qué no aplica.')
+    reasons.extend(filter(None, [risk_reason(files, data)]))
+    return {'decision': 'block', 'reason': '\n'.join(reasons) + ' No repitas la respuesta anterior.'} if reasons else None
+
+
+# Paths that make a change Critical whatever the agent judged. Each label is a risk item Slice Flow names.
+# ponytail: names only, so auth code in src/app.py goes unseen; add content signals if `harness stats` shows misses.
+RISK_PATHS = [
+    ('secrets', r'(?:^|/)\.env(?:\.|$)|(?:^|/)(?:secrets?|credentials?)(?:[/._-]|$)|\.(?:pem|key|p12|pfx)$'),
+    ('authentication', r'(?:^|/)(?:auth(?:entication|orization|[nz])?|login|sessions?|oauth2?|sso)[/._-]'),
+    ('payments', r'(?:^|/)(?:billing|payments?|stripe)[/._-]'),
+    ('migrations', r'(?:^|/)(?:migrations?|migrate|alembic/versions)/'),
+    ('deploy or environment config', r'(?:^|/)(?:\.github/workflows|\.circleci|terraform|k8s|helm)/|\.tf$'
+                                     r'|(?:^|/)(?:\.gitlab-ci\.yml|azure-pipelines[^/]*|Jenkinsfile|Dockerfile[^/]*|docker-compose[^/]*)$'),
+]
+RISK_LINE = re.compile(r'^[ \t>*_`-]*Risk:[ \t*_`]*(.*)$', re.M | re.I)
+
+
+def copilot_final_message(path):
+    """The last Copilot message of the turn when it is a final answer: text and no tool requests."""
+    last = {}
+    for e in entries(path):
+        if is_user_prompt(e):
+            last = {}
+        elif e.get('type') == 'assistant.message':
+            last = e.get('data') if isinstance(e.get('data'), dict) else {}
+    text = last.get('content')
+    return text if isinstance(text, str) and text.strip() and not last.get('toolRequests') else None
+
+
+def risk_reason(files, data):
+    message = data.get('last_assistant_message')  # Claude Code and Codex send it
+    if not isinstance(message, str):  # VS Code's Copilot does not: its transcript has it, unless it lags
+        message = copilot_final_message(data.get('transcript_path', ''))
+    if message is None:
+        return None
+    cwd = data.get('cwd')
+    cwd = Path(cwd if isinstance(cwd, str) and cwd else '.')
+
+    def below_root(path):  # a checkout named payments-api must not flag every file in it
+        path = cwd / path.replace('\\', '/')  # an absolute path stays as it is
+        root = next((d for d in path.parents if (d / '.git').exists()), cwd)
+        return path.as_posix().removeprefix(root.as_posix().rstrip('/') + '/')
+    paths = [below_root(f) for f in files]
+    labels = [label for label, pattern in RISK_PATHS if any(re.search(pattern, p, re.I) for p in paths)]
+    lines = RISK_LINE.findall(message)
+    if not labels or lines and lines[-1].strip() and not re.match(r'none\b', lines[-1], re.I):
+        return None
+    return (f'Riesgo: este turno editó rutas de {", ".join(labels)} y la respuesta '
+            + ('cierra con `Risk: none`' if lines else 'no trae la línea `Risk:`')
+            + '. Por la ruta el cambio es Critical: nombra el ítem (`Risk: <ítem> (razón)`) y aplica esa verificación, '
+              'o di en una línea por qué la ruta no es de riesgo.')
 
 
 def pretool_decision(data, copilot=False):
@@ -247,6 +301,7 @@ def pretool_decision(data, copilot=False):
 
 def selftest():
     import tempfile
+    import time
 
     def transcript(*items):
         # Real transcripts are raw UTF-8 (accents, arrows), not ASCII-escaped JSON.
@@ -342,7 +397,47 @@ def selftest():
                 'make build', 'git commit -m "fix: x"', './run.sh'):
         path = transcript(('prompt', 'x'), src, ('Bash', {'command': ran}))
         assert evidence_decision({'transcript_path': path}) is None, ran
+    # Risk by path: an edit on a risk path cannot close with `Risk: none` or without the line.
+    def closing(message, *paths, cwd='/r', ran=True, **extra):
+        tools = [('Edit', {'file_path': p}) for p in paths] + ([test_cmd] if ran else [])
+        data = {'transcript_path': transcript(('prompt', 'x'), *tools), 'cwd': cwd, **extra}
+        return evidence_decision(data if message is None else {**data, 'last_assistant_message': message})
+
+    risky = closing('Listo.\n\nRisk: none', '/r/src/auth/login.py')
+    assert risky['decision'] == 'block' and 'authentication' in risky['reason'], risky
+    assert closing('Listo.', '/r/src/auth/login.py')['decision'] == 'block'
+    assert closing('Listo.\n\n**Risk:** none', '/r/db/migrations/001_users.sql')['decision'] == 'block'
+    several = closing('Risk: none', '/r/.github/workflows/ci.yml', '/r/app/billing/invoice.py', '/r/.env.local')['reason']
+    assert all(label in several for label in ('deploy or environment config', 'payments', 'secrets')), several
+    assert closing('Listo.\n\nRisk: authentication (cambia la cookie de sesión)', '/r/src/auth/login.py') is None
+    assert closing('Risk: none (solo renombra)\n\nRisk: migrations (borra una columna)', '/r/db/migrations/2.sql') is None
+    assert closing('Risk: none', '/r/src/app.py', '/r/src/author.py', '/r/tests/test_secrets.py') is None
+    # The checkout's own name is not a risk path: files are matched below the repository root.
+    named = tempfile.mkdtemp(suffix='-payments-api')
+    (Path(named) / '.git').mkdir()
+    assert closing('Risk: none', f'{named}/src/util.py', cwd=f'{named}/src') is None
+    assert closing('Risk: none', f'{named}/src/auth/token.py', cwd=f'{named}/src')['decision'] == 'block'
+    # Review findings: more spellings of the same classes, the root of the edited file, an empty Risk line.
+    for path in ('src/authentication/service.py', 'src/authorization/policy.py', 'app/oauth2/client.py',
+                 'db/migrate/2024_add.rb', 'alembic/versions/abc.py', '.circleci/config.yml', 'azure-pipelines.yml'):
+        assert closing('Risk: none', f'/r/{path}')['decision'] == 'block', path
+    assert closing('Risk: none', f'{named}/src/util.py') is None  # edited from a session in another folder
+    assert closing('Risk: none', '/r/src/auth/login.py', cwd=123)['decision'] == 'block'
+    assert closing('Risk: \n\ntodo bien', '/r/src/auth/login.py')['decision'] == 'block'
+    started = time.monotonic()
+    assert closing('\n' * 50000, '/r/src/auth/login.py')['decision'] == 'block'
+    looked = ('Bash', {'command': 'git ' + '-c ' * 60})  # repeated global options must not backtrack
+    assert evidence_decision({'transcript_path': transcript(('prompt', 'x'), src, looked)}) is None
+    assert time.monotonic() - started < 2
+    both = closing('Risk: none', '/r/src/auth/login.py', ran=False)['reason']
+    assert 'Evidencia:' in both and 'Riesgo:' in both, both
+    assert closing(None, '/r/src/auth/login.py') is None  # an agent whose Stop payload has no final message
+    assert closing('Risk: none', '/r/src/auth/login.py', stop_hook_active=True) is None
     cx_src = {'type': 'FileChange', 'changes': {'src/a.py': {'type': 'update', 'unified_diff': '+x\n'}}}
+    cx_migration = {'type': 'FileChange', 'changes': {'db/migrations/3.sql': {'type': 'add'}}}
+    cx_closed = {'transcript_path': codex_transcript(prompt, cx_migration, {'type': 'CommandExecution', 'command': ['sh', '-c', 'pytest']}),
+                 'cwd': '/r', 'last_assistant_message': 'Done.\n\nRisk: none'}
+    assert 'migrations' in evidence_decision(cx_closed)['reason']
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src)})['decision'] == 'block'
     cx_run = {'type': 'CommandExecution', 'command': ['/bin/zsh', '-lc', 'pytest']}
     assert evidence_decision({'transcript_path': codex_transcript(prompt, cx_src, cx_run)}) is None
@@ -367,6 +462,30 @@ def selftest():
     cp_run = ('run_in_terminal', {'command': 'pytest'})
     assert evidence_decision({'transcript_path': copilot_transcript(('prompt', {}), cp_src, cp_run)}) is None
     assert evidence_decision({'transcript_path': copilot_transcript(('prompt', {}), cp_run, cp_src)})['decision'] == 'block'
+    # Copilot's Stop payload has no final message: the last one of the turn comes from its transcript.
+    def cp_closing(*messages, path='src/auth/login.py'):
+        f = tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False, encoding='utf-8')
+        events = [{'type': 'user.message', 'data': {}},
+                  {'type': 'tool.execution_start', 'data': {'toolName': 'replace_string_in_file', 'arguments': {'filePath': path}}},
+                  {'type': 'tool.execution_start', 'data': {'toolName': 'run_in_terminal', 'arguments': {'command': 'pytest'}}},
+                  *({'type': 'assistant.message', 'data': {'content': text, 'toolRequests': tools}} for text, tools in messages)]
+        f.write('\n'.join(json.dumps(e) for e in events))
+        f.close()
+        return evidence_decision({'transcript_path': f.name, 'cwd': '/r'})
+
+    assert 'authentication' in cp_closing(('Reviso.', [{'name': 'read_file'}]), ('Listo.\n\nRisk: none', []))['reason']
+    assert cp_closing(('Listo.', []))['decision'] == 'block'
+    assert cp_closing(('Listo.\n\nRisk: authentication (cambia la cookie)', [])) is None
+    assert cp_closing(('Risk: none', []), path='src/app.py') is None
+    # A message that still requests tools is not the final one: the transcript may lag, so the check is skipped.
+    assert cp_closing(('Risk: none', []), ('Voy a correr las pruebas.', [{'name': 'run_in_terminal'}])) is None
+    assert cp_closing(('', [])) is None and cp_closing() is None
+    # An odd event must not cost the evidence block: the hook fails open on any error.
+    odd = copilot_transcript(('prompt', {}), cp_src)
+    with open(odd, 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'type': 'assistant.message', 'data': 'x'}) + '\n')
+    assert 'Evidencia' in evidence_decision({'transcript_path': odd})['reason']
+
     def cp_decision(*items):
         return evidence_decision({'transcript_path': copilot_transcript(('prompt', {}), *items)})
 

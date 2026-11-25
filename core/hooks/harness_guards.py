@@ -1,7 +1,8 @@
 """Claude Code PreToolUse guards for the global CLAUDE.md delivery rules.
 
   bash    (matcher Bash) commit hygiene, remote/delivery operations, CodeGraph lifecycle,
-          worktrees under temporary directories, recursive deletes outside the project.
+          worktrees under temporary directories, recursive deletes outside the project,
+          git commands that discard work.
   backup  (matcher Edit|Write|MultiEdit|NotebookEdit) timestamped backup of global agent
           configuration before the first edit of each file in a session.
 
@@ -10,6 +11,7 @@ prompt cases live in ~/.codex/rules/default.rules. `backup` also reads apply_pat
 
 Run with `selftest` to check the rules. Fails closed: any unexpected error denies the action.
 Limit: Bash commands that write global config (sed -i, redirects) are not backed up."""
+import functools
 import json
 import os
 import posixpath
@@ -33,8 +35,12 @@ RUNTIME_DIRS = {'projects', 'file-history', 'cache', 'sessions', 'debug', 'backu
 BACKUP_DIR = HOME / '.claude' / 'backups'
 
 # A command segment starts at the beginning or after a shell separator.
-SEG = r'(?:^|[;&|(\n]\s*|\$\(\s*)(?:\w+=\S+\s+)*'
-GIT = r'git\s+(?:-[Cc]\s+\S+\s+|-\S+\s+)*'  # global options, incl. -C <path>
+# The value of an assignment is possessive (\S++): it never gives characters back. A run of thousands of `x=$(`
+# with no space is still quadratic, because every `(` is a place where a command can start.
+SEG = r'(?:^|[;&|(\n]\s*|\$\(\s*)(?:\w+=\S++\s+)*'
+# Global options, incl. -C <path>. A bare -C or -c always takes the next word, so the two branches never overlap:
+# with an overlap, `git -c -c -c …` doubled the work with every pair.
+GIT = r'git\s+(?:-[Cc]\s+\S+\s+|-(?![Cc]\s)\S+\s+)*'
 CONVENTIONAL = re.compile(
     r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: \S')
 ATTRIBUTION = re.compile(r'co-authored-by|generated with \[?claude|🤖', re.I)
@@ -147,7 +153,7 @@ PATCH_FILE = re.compile(r'^\*\*\* (?:Update|Delete) File: (.+)$', re.M)  # Codex
 CODEGRAPH_INDEX = re.compile(SEG + r'codegraph\s+index\b')
 # Matched on normalize_paths(cmd), so Windows homes and %LOCALAPPDATA% already read ~/AppData/Local.
 TMP_ROOT = r'/tmp|/var/tmp|/private/tmp|/private/var/tmp|/(?:private/)?var/folders|~/AppData/Local/Temp|[a-z]:/Windows/Temp'
-TMP_WORKTREE = re.compile(SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:\S+\s+)?)*'
+TMP_WORKTREE = re.compile(SEG + GIT + r'worktree\s+add\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*'
                           r'(?:(?:' + TMP_ROOT + r'|\$\{?(?:env:)?TE?MP\b\}?|%TE?MP%)(?=[/\s;&|)]|$)'
                           # macOS $TMPDIR ends in /, so "$TMPDIR"wt (quotes dropped) is a path; mktemp -d uses it.
                           r'|\$\{?TMPDIR|(?:\$\(\s*)?mktemp(?=[\s;&|)]|$))', re.I)
@@ -158,28 +164,80 @@ RM_RECURSIVE = re.compile(r'-(?=[a-zA-Z]*[rR])[dfiIPRrvWx]+|--recursive')  # -rf
 DELETE_REASON = 'Regla global: un borrado recursivo fuera del proyecto requiere autorización explícita del usuario.'
 
 
+WRAPPERS = ('sudo', 'doas', 'command', 'env', 'exec', 'eval', 'then', 'do', 'else', 'time', 'nohup', 'xargs')
+QUOTED = r'''"(?:\\.|[^"\\])*"|'[^']*\''''
+SHELL = r'(?:(?:ba|z|da|k)?sh|pwsh|powershell)(?:\.exe)?'
+_DIR = r'''(?:[^\s"']*[\\/])?'''
+# The script a segment hands to a shell: `bash -c "…"`, `bash -eo pipefail -c $'…'`, `pwsh -Command "…"`, `eval "…"`.
+# Only a flag with a `c` takes a script; after `bash -s` or `sh -e` the quoted word is an argument.
+# Matched after the leading `$(`, `(` and `!` are stripped, so it cannot backtrack over them.
+SHELL_SCRIPT = re.compile(r'(?:(?:\w+=\S*|' + _DIR + '(?:' + '|'.join(WRAPPERS) + r')(?:\s+-\S+)*)\s+)*' + _DIR
+                          + '(?:' + SHELL + r'(?:\s+(?:-\w*o\s+\w+|--?[\w-]+))*?\s+-\w*c\w*|eval)\s+\$?(' + QUOTED + ')', re.I)
+# What opens a command without being part of it: `(`, `$(`, `!`, and the `x=` of `x=$(…)`.
+LEAD = re.compile(r'^(?:[\s$({!`]|\w+=(?=\$\(|`))+')
+SEPARATORS, MASKED = ';&|\n', '\ue000\ue001\ue002\ue003'  # private-use characters stand in for quoted separators
+
+
+@functools.lru_cache(maxsize=8)  # every rule reads the same command; callers must not change the lists
+def command_words(cmd):
+    """The words of each command the shell would run: wrappers, their flags and leading assignments dropped.
+
+    Limits: every line of a heredoc counts as a command, so a runbook written with `cat <<EOF` asks when
+    one of its lines starts with a guarded command. A substitution in the middle of a command
+    (`echo $(…)`), a wrapper option that takes a value (`sudo -u x`, `xargs -I {}`) and a quoted word
+    with a space (`git -C "my repo"`) are not understood."""
+    return tuple(_command_words(cmd))
+
+
+def _command_words(cmd):
+    # A separator inside quotes starts no command: mask it before the split.
+    masked = re.sub(QUOTED, lambda m: m[0].translate(str.maketrans(SEPARATORS, MASKED)), cmd)
+    for segment in re.split(r'[;&|\n]+', masked):
+        script = SHELL_SCRIPT.match(LEAD.sub('', segment))
+        if script:
+            inner = script[1][1:-1].translate(str.maketrans(MASKED, SEPARATORS))
+            yield from command_words(re.sub(r'\\(["$`\\])', r'\1', inner) if script[1][0] == '"' else inner)
+            continue
+        segment = normalize_paths(segment.translate(str.maketrans(MASKED, '    ')))
+        # A subshell or substitution closes with `)`, which sticks to the last word.
+        words = [w.rstrip(')') for w in LEAD.sub('', segment).split()]
+        start = 0
+        while start < len(words) and (words[start].rsplit('/', 1)[-1] in WRAPPERS or re.match(r'\w+=', words[start])
+                                      or start and words[start].startswith('-')):
+            start += 1
+        words = [w for w in words[start:] if w]
+        if words:
+            yield words
+
+
 def deletes_outside(cmd, cwd=None):
     """A recursive delete with a target outside the project (the nearest .git above cwd) and the temp folders.
 
     Limits: relative targets are trusted, so `cd ~ && rm -rf x` passes; so do variables other than the
-    home ones, `find -delete` and `xargs rm`."""
+    home ones, targets that arrive through a pipe (`… | xargs rm -rf`), cmd.exe's `rd /s`, and what
+    `command_words` does not understand."""
     cwd = Path(cwd) if isinstance(cwd, str) and cwd else Path.cwd()
     root = None
-    # A separator inside quotes starts no command: blank it before the quotes are dropped.
-    cmd = re.sub(r'''"(?:\\.|[^"\\])*"|'[^']*\'''', lambda m: re.sub(r'[;&|\n]', ' ', m[0]), cmd)
-    for segment in re.split(r'[;&|\n]+', normalize_paths(cmd)):
-        words = [w for w in re.sub(r'^[\s$({!]+', '', segment).split() if not re.match(r'^\w+=', w)]
-        while words and words[0] in ('sudo', 'command', 'env', 'exec', 'then', 'do', 'else', 'time'):
-            words.pop(0)
-        if not words or words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') not in RM_NAMES:
+    for words in command_words(cmd):
+        name, args = words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe'), list(words[1:])
+        if name == 'find':
+            while args and args[0] in ('-H', '-L', '-P'):
+                args.pop(0)
+            if '-delete' not in args and not any(a in ('-exec', '-execdir', '-ok', '-okdir') and b.rsplit('/', 1)[-1] == 'rm'
+                                                 for a, b in zip(args, args[1:])):
+                continue
+            # find lists its start paths before the first expression word.
+            targets = args[:next((i for i, w in enumerate(args) if w.startswith(('-', '(', '!', '/(', '/!'))), len(args))]
+        elif name in RM_NAMES:
+            dashes = args.index('--') if '--' in args else len(args)
+            flags = [w for w in args[:dashes] if w.startswith('-')]
+            # PowerShell takes any prefix of -Recurse.
+            if not any(RM_RECURSIVE.fullmatch(w) or len(w) > 1 and '-recurse'.startswith(w.lower()) for w in flags):
+                continue
+            targets = [w for w in args[:dashes] if not w.startswith('-')] + args[dashes + 1:]
+        else:
             continue
-        args = words[1:]
-        dashes = args.index('--') if '--' in args else len(args)
-        flags = [w for w in args[:dashes] if w.startswith('-')]
-        # PowerShell takes any prefix of -Recurse.
-        if not any(RM_RECURSIVE.fullmatch(w) or len(w) > 1 and '-recurse'.startswith(w.lower()) for w in flags):
-            continue
-        for target in [w for w in args[:dashes] if not w.startswith('-')] + args[dashes + 1:]:
+        for target in targets:
             # Git Bash spells a Windows home /c/Users/me, which normalize_paths leaves as /c~; /tmp/../etc is not temp.
             target = posixpath.normpath(re.sub(r'^/[a-zA-Z](?=~)', '', target))
             if not re.match(r'[/~]|[a-zA-Z]:/', target) and '..' not in target.split('/'):
@@ -191,6 +249,38 @@ def deletes_outside(cmd, cwd=None):
             path = Path(os.path.normpath(cwd / (str(HOME) + target[1:] if target.startswith('~') else target)))
             if root not in path.parents:
                 return True
+    return False
+
+
+DISCARD_REASON = ('Regla global: este comando de git descarta trabajo sin deshacer (cambios sin commit o commits sin '
+                  'fusionar) y requiere autorización explícita del usuario.')
+WHOLE_TREE = {'.', './', ':/', '*', './*'}
+
+
+def discards_work(cmd):
+    """git reset --hard, a forced clean, a forced checkout or switch, a checkout or restore of the whole tree,
+    or a forced branch delete."""
+    for words in command_words(cmd):
+        if words[0].rsplit('/', 1)[-1].lower().removesuffix('.exe') != 'git':
+            continue
+        at = 1
+        while at < len(words) and words[at].startswith('-'):  # global options; these take a value as the next word
+            at += 2 if words[at] in ('-C', '-c', '--git-dir', '--work-tree', '--namespace') else 1
+        if at >= len(words):
+            continue
+        sub, rest = words[at], words[at + 1:]
+        short = ''.join(w[1:] for w in rest if re.match(r'-[a-zA-Z]', w))
+
+        def has(option):  # git takes any unambiguous prefix of a long option
+            return any(len(w) > 3 and option.startswith(w.split('=')[0]) for w in rest)
+        whole = not WHOLE_TREE.isdisjoint(rest) and 'p' not in short and not has('--patch')  # -p asks hunk by hunk
+        if (sub == 'reset' and has('--hard')
+                or sub == 'clean' and ('f' in short or has('--force')) and 'n' not in short and not has('--dry-run')
+                or sub == 'checkout' and (whole or 'f' in short or has('--force'))
+                or sub == 'switch' and ('f' in short or has('--force') or has('--discard-changes'))
+                or sub == 'restore' and whole and (not ('S' in short or has('--staged')) or 'W' in short or has('--worktree'))
+                or sub == 'branch' and ('D' in short or ('d' in short or has('--delete')) and ('f' in short or has('--force')))):
+            return True
     return False
 
 
@@ -221,9 +311,10 @@ def bash_decision(data, codex=False):
     cmd = cmd if isinstance(cmd, str) else ''
     out = _bash_decision(cmd, data.get('cwd'))
     if codex and out and out['hookSpecificOutput']['permissionDecision'] == 'ask':
-        if deletes_outside(cmd, data.get('cwd')):  # execpolicy rules match commands, not paths
-            return decision('deny', DELETE_REASON + ' Codex no puede pedir aprobación aquí: pide al '
-                                                    'usuario que lo corra.')
+        # execpolicy rules match the start of a command, not its paths or the flags after a subcommand
+        local = DELETE_REASON if deletes_outside(cmd, data.get('cwd')) else DISCARD_REASON if discards_work(cmd) else None
+        if local:
+            return decision('deny', local + ' Codex no puede pedir aprobación aquí: pide al usuario que lo corra.')
         if mcp:  # execpolicy rules only see Codex's own shell tool, so nothing would ask
             return decision('deny', out['hookSpecificOutput']['permissionDecisionReason'] + ' Codex no pide '
                                     'aprobación en herramientas MCP: córrelo con su shell, que sí la pide.')
@@ -275,6 +366,8 @@ def _bash_decision(cmd, cwd=None):
                                'reindexar. Confirma que es el caso.')
     if deletes_outside(cmd, cwd):
         return decision('ask', DELETE_REASON)
+    if discards_work(cmd):
+        return decision('ask', DISCARD_REASON)
     return None
 
 
@@ -421,6 +514,57 @@ def selftest():
     assert bash_decision(gitbash) is None  # Git Bash spells C:\Users\me as /c/Users/me
     assert rm('rm -rf ~/Documents', codex=True) == 'deny'  # Codex cannot ask, and its rules see no paths
     assert rm('rm -rf dist', codex=True) is None
+    # A wrapper does not hide the delete: the script of a shell -c or eval, a prefix command, find.
+    for wrapped in ('bash -c "rm -rf ~/old"', "sh -c 'rm -rf /srv/x'", 'bash -lc "cd /srv; rm -rf ~/old"',
+                    'eval "rm -rf ~/old"', '/bin/zsh -c "rm -rf ~/old"', 'pwsh -NoProfile -Command "Remove-Item -Recurse ~/old"',
+                    'nohup rm -rf ~/old', 'xargs rm -rf /srv/x', 'xargs -0 rm -rf /srv/x', 'doas rm -rf /etc/x',
+                    'sudo -n rm -rf /etc/x', 'find ~/old -delete', 'find /srv/x -type f -exec rm -rf {} +',
+                    r'find ~/old -name "*.log" -exec rm {} \;', 'find . ~/old -delete'):
+        assert rm(wrapped) == 'ask', wrapped
+    for inside in ('bash -c "rm -rf dist"', 'eval "rm -rf /tmp/x"', 'nohup rm -rf dist', 'xargs rm -rf',
+                   'find . -name "*.pyc" -delete', 'find dist -exec rm -rf {} +', 'find ~/old -name "*.log"',
+                   'find /tmp/x -delete', 'bash -c "echo rm -rf ~/x"', 'bash script.sh ~/old', 'echo "bash -c \'rm -rf ~/x\'"'):
+        assert rm(inside) is None, inside
+    assert rm('bash -c "rm -rf ~/old"', codex=True) == 'deny'
+    # Review findings: unquoted eval, wrapper and shell flags, env by path, $'…' scripts.
+    for wrapped in ('eval rm -rf ~/old', 'sudo -n bash -c "rm -rf ~/old"', 'xargs -0 bash -c "rm -rf ~/old"',
+                    'bash --norc -c "rm -rf ~/old"', 'bash -eo pipefail -c "rm -rf ~/old"',
+                    '/usr/bin/env bash -c "rm -rf ~/old"', "bash -c $'rm -rf ~/old'", '/usr/bin/env rm -rf ~/old',
+                    'FOO=1 rm -rf ~/old', 'env FOO=1 BAR=2 rm -rf ~/old', '(cd /srv && rm -rf ~/old)'):
+        assert rm(wrapped) == 'ask', wrapped
+    # A heredoc body is read as commands, whoever receives it: a known limit that errs towards asking.
+    for script in ("bash <<'EOF'\nrm -rf ~/old\nEOF", 'cat <<EOF | sh\nrm -rf ~/old\nEOF',
+                   "cat > RUNBOOK.md <<'EOF'\ngit reset --hard origin/main\nEOF"):
+        assert rm(script) == 'ask', script
+    started = time.monotonic()
+    assert bash('$(' * 20000) is None  # a leading run of $( must not backtrack
+    for flags in ('git ' + '-c x ' * 60000 + 'commit', '"\\' * 6000, 'git ' + '-c ' * 60, 'git ' + '-C ' * 61 + 'push --force', 'git -c a=b ' * 2000,
+                  'git worktree add ' + '-x ' * 60):
+        assert bash(flags) in (None, 'ask'), flags[:30]  # repeated global options must not backtrack either
+    assert time.monotonic() - started < 2
+    # A git command that discards work with no undo asks; Codex, which cannot ask, denies.
+    for lossy in ('git reset --hard', 'git reset --hard HEAD~2', 'git -C ../repo reset --hard origin/main', 'git reset --har',
+                  'git clean -fdx', 'git clean --force -d', 'git checkout -- .', 'git checkout .', 'git checkout HEAD -- .',
+                  'git restore .', 'git restore --staged --worktree .', 'git restore -SW .', 'git branch -D feature',
+                  'git branch --delete --force feature', 'git branch -df feature', 'cd repo && git reset --hard',
+                  'bash -c "git clean -fd"', 'git --git-dir .git reset --hard', 'eval git reset --hard',
+                  'git checkout -f', 'git checkout --force main', 'git checkout -fB main origin/main', 'git switch -f main',
+                  'git switch --discard-changes main', 'git switch --force -c x',
+                  # Second review: subshells and substitutions, -c key=value, whole-tree globs.
+                  '(cd repo && git reset --hard)', '(git checkout -- .)', 'x=$(git reset --hard)', 'bash -c "(git reset --hard)"',
+                  'git -c x=y reset --hard', 'git checkout -- *', 'git restore ./*'):
+        assert bash(lossy) == 'ask', lossy
+        assert rm(lossy, codex=True) == 'deny', lossy
+    for kept in ('git reset --soft HEAD~1', 'git reset HEAD file.py', 'git clean -n', 'git clean -nfd', 'git clean --dry-run -f',
+                 'git checkout feature', 'git checkout -- file.py', 'git restore file.py', 'git restore --staged .',
+                 'git branch -d merged', 'git branch --delete merged', 'echo "git reset --hard"',
+                 'git commit -m "fix: undo git reset --hard"', 'git log --oneline -- .',
+                 'git checkout -p .', 'git checkout --patch .', 'git restore -p .', 'git checkout -b fix',
+                 'git switch main', 'git switch -c feature', 'git switch --detach HEAD~1',
+                 # Only -c hands a script to the shell: after other flags the quoted word is an argument.
+                 'sh -e "git reset --hard"', 'bash -s "git reset --hard"', 'zsh -i "git clean -fd"'):
+        assert bash(kept) is None, kept
+        assert rm(kept, codex=True) is None, kept
     for secret in ('cat ~/.ssh/id_ed25519', 'cp ~/.aws/credentials /tmp/x', 'base64 $HOME/.netrc',
                    'security find-generic-password -s engram-cloud-token -w',
                    'head ~/.codex/auth.json', 'gpg --export-secret-keys > k; cat ~/.gnupg/x'):

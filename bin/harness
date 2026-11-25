@@ -18,6 +18,7 @@ if sys.version_info < (3, 11):  # before importing tomllib, which arrived in 3.1
              'for the hooks and run bin/harness with that interpreter.')
 
 import argparse
+import importlib.util
 import json
 import os
 import queue
@@ -28,7 +29,8 @@ import subprocess
 import threading
 import http.client
 import urllib.request
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from time import monotonic
 import tomllib
 from pathlib import Path
@@ -1389,6 +1391,102 @@ def doctor(home, agent=None):
     return 0
 
 
+# How Claude Code 2.1.x transcripts record a hook decision. The format is undocumented: read as observed.
+HOOK_DENIAL = re.compile(r'PreToolUse:\S+ hook error: ')
+STOP_FEEDBACK = 'Stop hook feedback:\n'
+REASON_LABEL = re.compile(r'^[-* \t]*([^:\n]{3,40}): (.*)', re.M)
+# User entries the app writes on its own: they are not prompts and do not end the turn in progress.
+INJECTED = re.compile(r'\s*(?:<(?:task-notification|system-reminder|local-command-)|\[Request interrupted)')
+
+
+def reason_labels(text):
+    """The label each reason line opens with; a guard rule keeps its first clause, which names the rule."""
+    found = [f'{label}: {re.split(r"[(.,:]| requiere ", rest)[0].strip()}' if label == 'Regla global' else label
+             for label, rest in REASON_LABEL.findall(text)]
+    return found or [' '.join(text.split()[:3])] if text.strip() else []  # another tool's hook: its opening words
+
+
+def load_hook(name):
+    spec = importlib.util.spec_from_file_location(name, HOOKS / f'{name}.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def stats(home, days):
+    """Per week in Claude Code sessions: hook denials, Stop blocks, and code turns that closed with a Risk line."""
+    hook = load_hook('enforce_memory_graph')  # one definition of "code file" and of the Risk line
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    weeks = {}
+    projects = home / '.claude' / 'projects'
+
+    def close(turn):
+        if turn and turn['code']:
+            turn['counts']['code turns'] += 1
+            turn['counts']['  closed with Risk:'] += turn['risk']
+
+    for path in sorted(projects.rglob('*.jsonl')) if projects.is_dir() else ():
+        if path.stat().st_mtime < cutoff.timestamp():
+            continue
+        turn = None  # the open user turn: edits by subagents live in their own files and are not seen
+        with path.open(encoding='utf-8', errors='replace') as lines:
+            for line in lines:
+                if '"user"' not in line and '"assistant"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    content = (entry.get('message') or {}).get('content')
+                    if entry.get('type') == 'assistant':
+                        for part in content if turn and isinstance(content, list) and not entry.get('isSidechain') else ():
+                            if part.get('type') == 'tool_use' and part.get('name') in hook.EDIT_TOOLS and hook.code_paths(part):
+                                turn['code'] = True
+                            elif part.get('type') == 'text' and part.get('text', '').strip():
+                                turn['risk'] = bool(hook.RISK_LINE.search(part['text']))  # the last text of the turn decides
+                        continue
+                    when = datetime.fromisoformat(entry['timestamp'])
+                    if entry.get('type') != 'user' or when < cutoff:
+                        continue
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                counts = weeks.setdefault((when - timedelta(days=when.weekday())).date().isoformat(), Counter())
+                results = [p for p in content if isinstance(p, dict) and p.get('type') == 'tool_result'] \
+                    if isinstance(content, list) else []
+                texts = [p['text'] for p in content if isinstance(p, dict) and isinstance(p.get('text'), str)] \
+                    if isinstance(content, list) and not results else None
+                prompt = content if isinstance(content, str) else ' '.join(texts) if texts else None
+                if isinstance(content, str) and content.startswith(STOP_FEEDBACK):
+                    counts.update(('stopped', label) for label in reason_labels(content[len(STOP_FEEDBACK):]))
+                elif prompt is not None and not any(entry.get(k) for k in ('isMeta', 'isSidechain', 'isCompactSummary')) \
+                        and not INJECTED.match(prompt):
+                    close(turn)  # a prompt: text, or text with an image
+                    counts['turns'] += 1
+                    turn = {'counts': counts, 'code': False, 'risk': False}
+                for part in results:
+                    if not part.get('is_error'):
+                        continue  # a file read that shows a reason is not a denial
+                    text = part.get('content')
+                    if isinstance(text, list):
+                        text = ' '.join(str(p.get('text', '')) for p in text if isinstance(p, dict))
+                    denial = HOOK_DENIAL.match(str(text or ''))
+                    if denial:
+                        counts.update(('denied', label) for label in reason_labels(str(text)[denial.end():])[:1])
+        close(turn)
+    if not weeks:
+        print(f'no Claude Code transcripts in the last {days} days')
+        return 0
+    fixed = ['turns', 'code turns', '  closed with Risk:']
+    rows = sorted({key for counts in weeks.values() for key in counts if isinstance(key, tuple)})
+    names = [*fixed, *(f'{kind:<8}{label}' for kind, label in rows)]
+    width = max(map(len, names)) + 1
+    print(f'Claude Code, last {days} days, per week (weeks start on Monday, UTC)')
+    print(' ' * width + ''.join(f'{week[5:]:>7}' for week in sorted(weeks)))
+    for name, key in zip(names, [*fixed, *rows]):
+        print(name.ljust(width) + ''.join(f'{weeks[week][key]:>7}' for week in sorted(weeks)))
+    print('`code turns` edited a code file; `denied` and `stopped` are hook decisions by rule. '
+          'An `ask` the user approved leaves no hook trace, so approvals are not counted.')
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='harness')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -1418,6 +1516,9 @@ def main(argv=None):
     diagnosing = sub.add_parser('doctor')
     diagnosing.add_argument('--home', type=Path, default=Path.home())
     diagnosing.add_argument('--agent', choices=['codex'])
+    report = sub.add_parser('stats')
+    report.add_argument('--home', type=Path, default=Path.home())
+    report.add_argument('--days', type=int, default=28, help='how far back to read (default 28)')
     args = parser.parse_args(argv)
     if hasattr(args, 'home'):
         args.home = Path(os.path.abspath(args.home))
@@ -1425,6 +1526,8 @@ def main(argv=None):
         parser.error('--runtime requires --agent codex')
     if getattr(args, 'keep', 0) < 0:
         parser.error('--keep takes 0 or more')
+    if not 1 <= getattr(args, 'days', 1) <= 3650:
+        parser.error('--days takes 1 to 3650')
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding='utf-8', newline='\n')  # Windows: cp1252 and CRLF by default
     if args.command == 'render':
@@ -1456,6 +1559,8 @@ def main(argv=None):
         return check(args.home, args.agent, args.runtime)
     elif args.command == 'doctor':
         return doctor(args.home, args.agent)
+    elif args.command == 'stats':
+        return stats(args.home, args.days)
 
 
 if __name__ == '__main__':

@@ -134,6 +134,20 @@ What counts as verification: a shell command (`Bash`, `PowerShell`, or `run_in_t
 - Edits made through a shell command, and MCP tools that run commands, are not seen.
 - Copilot is covered through its `Stop` hook, called with `--copilot`. This was checked against the VS Code Copilot extension installed on one Mac: it accepts the `Stop` event name, reads hooks from `~/.copilot/hooks`, sends `transcript_path` and `stop_hook_active`, and reads the decision only inside `hookSpecificOutput`. The transcript reader was checked against real Copilot transcripts. The hook has not yet been seen firing in a live VS Code chat, where agent hooks are in preview.
 
+### Risk by path
+
+The closing `Risk:` line is the agent's own call, and the same hook checks it against one fact it can see: the paths the turn edited. The idea comes from [rsc-harness](https://github.com/ericrisco/rsc-harness), where the change sets the review tier and the author does not.
+
+`RISK_PATHS` in the hook maps path patterns to five of the risk items Slice Flow names: secrets (`.env`, `secrets/`, `*.pem`), authentication (`auth/`, `login.*`, `session_*`), payments (`billing/`, `payments/`, `stripe.*`), migrations (`migrations/`, `db/migrate/`, `alembic/versions/`), and deploy or environment config (`.github/workflows/`, `.circleci/`, `Dockerfile`, `*.tf`). When a turn edited a code file on one of them and the final message has no `Risk:` line or says `Risk: none`, the gate blocks once and names the classes it saw. Any other value passes. When the evidence check fails too, one block carries both reasons.
+
+Paths are matched below the repository root of each edited file, so a checkout named `payments-api` does not flag every file in it. An empty `Risk:` line counts as `none`. A test checks that each class in the table appears in the Slice Flow risk sentence, so the table stays a subset of that list and never becomes a second one.
+
+Limits:
+
+- It reads names, not content: password hashing in `src/app.py` goes unseen. Contracts, concurrency, and missing tests cannot be seen from a path at all.
+- It cannot tell whether the named item is the right one, only that the line is not `none`.
+- It needs the final message. Claude Code and Codex send `last_assistant_message` in the Stop payload. VS Code's Copilot does not, so there the hook reads the last `assistant.message` of the turn from the transcript, and only when it has text and requests no tools; in the Copilot transcripts on one Mac that is how a finished turn ends. Whether that message is already written when the hook fires has not been seen in a live chat. When it is missing the check is skipped.
+
 ### Why it replaced the scope check
 
 The scope check blocked turns that edited 5 files or 150 lines, sized from Edit and Write input it could only partly see. The evidence gate asks for what the rule above requires. Keeping both would stack two Stop prompts on the same turn, so the scope check was removed.
@@ -271,13 +285,38 @@ Architecture, security, dependency, documentation and anti-slop guidance stay as
 ### Limits
 
 - The trim is 13%, not more: what remains are distinct rules, and going lower means dropping rules.
-- No test can show that the agent follows the shorter text better. The signal available without running agents headless is how often the hooks block or deny in real sessions, counted before and after.
+- No test can show that the agent follows the shorter text better. The signal available without running agents headless is how often the hooks block or deny in real sessions, counted before and after; `bin/harness stats` counts it.
+
+## Measuring the harness
+
+### Why
+
+A rule that never fires and a rule that fires on every turn both need a second look, and a test suite shows neither. The work here happens inside the apps, on subscriptions, so a headless agent run cannot be the measuring tool. The record of real sessions is already on disk.
+
+### How
+
+`bin/harness stats` reads the Claude Code transcripts under `~/.claude/projects` and prints one column per week:
+
+- `turns`: prompts the user typed, slash commands and `!` commands included. Task notifications, reminders, and interruptions the app writes as user entries are not counted and do not end a turn.
+- `code turns`: turns that edited a code file, by the evidence gate's own definition of code, and under it how many closed with a `Risk:` line in their last message.
+- `denied <rule>`: tool calls a PreToolUse hook denied.
+- `stopped <rule>`: turns a Stop hook blocked.
+
+Rules are grouped by the label their reason text opens with: `CodeGraph primero`, `Evidencia`, `Riesgo`, and `Regla global:` plus its first clause. No list of rules is hardcoded, so a hook removed in an earlier commit still shows in the weeks before its removal. On the Mac where this was written, the memory Stop hook blocked about ten turns a week until the commit that removed it.
+
+### Limits
+
+- The transcript format is undocumented. The command reads it as Claude Code 2.1.x writes it: a denial is an errored tool result that starts with `PreToolUse:<tool> hook error:`, and a Stop block is a user entry that starts with `Stop hook feedback:`.
+- An `ask` that the user approved leaves no hook trace, so the report shows what the guards stopped and not what they asked about.
+- Codex and Copilot sessions are not read.
+- A count says how often a rule fired, not whether it was right to fire.
+- A code turn without a `Risk:` line is not always a miss: the line closes a code change, and a change can span several turns. Edits made by subagents sit in their own transcripts and are not counted.
 
 ## Considered and not done
 
 | Idea | Decision | Reason |
 |---|---|---|
 | A runtime of our own that runs the model | Dropped | It needs API keys or the vendors' command-line tools; the work here happens inside the apps, on subscriptions. Two versions were built and discarded before any commit. |
-| A/B evals of the harness itself | Not now | They need the agents in headless mode as a measuring tool. |
+| A/B evals of a skill | Not now | [rsc-harness](https://github.com/ericrisco/rsc-harness) runs them inside a Claude Code session with a workflow, so headless mode is no longer the blocker there; it still is for Codex and Copilot. Each run spends about four agents per skill and scenario, and its rubric has to come from the expected outcome and not from the skill text, or the result is circular. Deferred until `harness stats` shows which skill is worth measuring. |
 | Removing the standalone `--agent codex` mode | Dropped | It is about 65 lines and does things the normal mode does not: it registers the Engram and CodeGraph MCP servers, keeps self-contained hooks under `~/.codex/hooks`, and runs the runtime checks. |
 | Removing `core/retired.txt` | Later | Every PC has to run `install` once first, or its old copies are never cleaned. |

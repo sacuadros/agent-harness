@@ -12,6 +12,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -1248,6 +1249,111 @@ def load_hook(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class RiskPaths(unittest.TestCase):
+    """The Stop hook's path table is a subset of the risk items Slice Flow names, never a second list."""
+
+    def test_every_class_is_named_in_the_slice_flow_risk_sentence(self):
+        sentence = next(line for line in (REPO / 'core/instructions/09-slice-flow.md').read_text(encoding='utf-8').splitlines()
+                        if 'A risk item makes the work Critical' in line)
+        labels = [label for label, _ in load_hook('enforce_memory_graph').RISK_PATHS]
+        self.assertTrue(labels)
+        for label in labels:
+            self.assertIn(label, sentence)
+
+
+class Stats(unittest.TestCase):
+    """`harness stats` counts hook interventions per week from Claude Code transcripts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+
+    def write(self, *entries, name='s.jsonl'):
+        project = self.home / '.claude' / 'projects' / 'p'
+        project.mkdir(parents=True, exist_ok=True)
+        (project / name).write_text('\n'.join(json.dumps(e, ensure_ascii=False) for e in entries), encoding='utf-8')
+
+    def stats(self, *args):
+        result = run('stats', '--home', str(self.home), *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    @staticmethod
+    def entry(content, days_ago=0, **extra):
+        when = datetime.now(timezone.utc) - timedelta(days=days_ago, minutes=5)
+        return {'type': 'user', 'timestamp': when.isoformat().replace('+00:00', 'Z'), 'message': {'content': content}, **extra}
+
+    @staticmethod
+    def result(text, is_error=True):
+        return [{'type': 'tool_result', 'tool_use_id': 't', 'is_error': is_error, 'content': text}]
+
+    def test_counts_denials_and_stop_blocks_by_rule(self):
+        self.write(
+            self.entry('haz el cambio'),
+            self.entry(self.result('PreToolUse:Bash hook error: CodeGraph primero: este repo tiene índice .codegraph.')),
+            self.entry(self.result('PreToolUse:Bash hook error: Regla global: no leer credenciales (claves privadas).')),
+            self.entry(self.result([{'type': 'text', 'text': 'PreToolUse:Bash hook error: Regla global: no leer credenciales (x).'}])),
+            # A file read that shows a reason is not a denial.
+            self.entry(self.result("12\t    return decision('deny', 'Regla global: no leer credenciales')", is_error=False)),
+            self.entry('Stop hook feedback:\nEvidencia: este turno editó 1 archivo de código.\n'
+                       'Riesgo: este turno editó rutas de migrations. No repitas la respuesta anterior.', isMeta=True),
+            self.entry('sigue'),
+            self.entry('resumen de la sesión', isCompactSummary=True),
+            self.entry('tarea del subagente', isSidechain=True),
+            self.entry('pregunta vieja', days_ago=60),
+            self.entry(self.result('PreToolUse:Bash hook error: CodeGraph primero: viejo.'), days_ago=60))
+        out = self.stats('--days', '14')
+        for row in (r'turns\s+2', r'denied\s+CodeGraph primero\s+1', r'denied\s+Regla global: no leer credenciales\s+2',
+                    r'stopped\s+Evidencia\s+1', r'stopped\s+Riesgo\s+1'):
+            self.assertRegex(out, rf'(?m)^{row}$')
+        self.assertEqual(len(re.findall(r'(?m)^(?:denied|stopped) ', out)), 4, out)
+
+    def test_counts_code_turns_that_close_with_a_risk_line(self):
+        def says(text):
+            return {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': text}]}}
+
+        def edits(path):
+            return {'type': 'assistant', 'message': {'content': [
+                {'type': 'tool_use', 'name': 'Edit', 'input': {'file_path': path}}]}}
+
+        self.write(
+            self.entry('arregla el bug'), edits('/r/src/a.py'), says('Reviso el archivo.'), says('Listo.\n\nRisk: none'),
+            self.entry([{'type': 'text', 'text': 'y este otro'}, {'type': 'image'}]), edits('/r/src/b.py'),
+            says('Risk: none'), self.entry(self.result('ok', is_error=False)), says('Hecho, sin más.'),
+            self.entry('actualiza el README'), edits('/r/README.md'), says('Risk: none'),
+            self.entry('explica el módulo'), says('Hace esto.'))
+        out = self.stats()
+        for row in (r'turns\s+4', r'code turns\s+2', r'  closed with Risk:\s+1'):
+            self.assertRegex(out, rf'(?m)^{row}$')
+
+    def test_injected_entries_neither_count_nor_split_a_turn(self):
+        edit = {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'name': 'Edit', 'input': {'file_path': '/r/a.py'}}]}}
+        done = {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Listo.\n\nRisk: none'}]}}
+        self.write(self.entry('arregla el bug'), edit,
+                   self.entry('<task-notification>\n<task-id>x</task-id>\n</task-notification>'),
+                   self.entry('<system-reminder>nota</system-reminder>'),
+                   self.entry([{'type': 'text', 'text': '[Request interrupted by user for tool use]'}]),
+                   self.entry('<local-command-stdout>ok</local-command-stdout>'),
+                   self.entry({'unexpected': 'shape'}), self.entry(5), self.entry([]), self.entry([5]), done,
+                   # A slash command the user typed is a prompt.
+                   self.entry('<command-name>/import</command-name><command-message>import</command-message>'))
+        out = self.stats()
+        for row in (r'turns\s+2', r'code turns\s+1', r'  closed with Risk:\s+1'):
+            self.assertRegex(out, rf'(?m)^{row}$')
+
+    def test_days_is_bounded(self):
+        for days in ('0', '-3', '100000000'):
+            result = run('stats', '--home', str(self.home), '--days', days)
+            self.assertEqual(result.returncode, 2, days)
+            self.assertIn('--days takes 1 to 3650', result.stderr)
+
+    def test_an_empty_window_says_so(self):
+        self.write(self.entry('pregunta vieja', days_ago=60))
+        self.assertIn('no Claude Code transcripts in the last 14 days', self.stats('--days', '14'))
+        self.assertIn('no Claude Code transcripts in the last 28 days', run('stats', '--home', str(self.home / 'absent')).stdout)
 
 
 FAKE_ENGRAM = """import os, sqlite3, sys
