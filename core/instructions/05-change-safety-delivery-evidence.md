@@ -11,4 +11,4 @@
 - After a cwd, worktree, Git, merge, test-environment, or unknown-mutation incident, inspect repository and provider state before retrying. Name a recovery command only when it can resolve the current block.
 - Commits are Conventional Commits planned as work units (`work-unit-commits` skill), with no `Co-Authored-By` trailers or other AI attribution in commits or PR descriptions.
 - Commit, push, or PR reuses the checks already run on that exact candidate; run only the ones it lacks.
-- Report the verified outcome, exact files, checks run, every failed, skipped, or pending check, findings, unverified aspects, and local, committed, pushed, merged, and deployed states separately.
+- Report in prose sized to the work: the verified outcome, exact files, checks run, every failed, skipped, or pending check, findings, unverified aspects, and which of local, committed, pushed, merged, and deployed apply.
