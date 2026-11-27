@@ -9,9 +9,11 @@ The harness runs inside the agent apps (the Claude app's Code tab, the Codex app
 ```mermaid
 flowchart TD
     R[Request] --> C{Classify before the first write}
-    C -- "small · Basic" --> I[Work inline]
-    C -- large --> B[backlog: one-line vertical slices<br/>you approve once]
-    B --> S[story: acceptance criteria and test list<br/>for the next slice only]
+    C -- trivial --> I[Do it at once]
+    C -- medium --> M[Acceptance criteria and test list<br/>in the reply]
+    C -- large --> B[Plan: slices backlog or OpenSpec proposal<br/>you approve once]
+    B --> S[Next slice or task]
+    M --> P
     S --> P[pair: one failing test, minimal code, repeat]
     I --> V
     P --> V[Verification for the assurance level<br/>Critical: verification-ladders]
@@ -36,13 +38,65 @@ Step 2 of Slice Flow (`core/instructions/09-slice-flow.md`) is now "Classify bef
 
 | Question | Answer | Effect |
 |---|---|---|
-| Does one bounded look explain it, with no risk item, finishable from the request plus `git diff`? | small | work inline, no backlog or story |
-| Otherwise | large | backlog, then story and pair per slice |
+| Does one bounded look explain an obvious, reversible change with no risk item? | trivial | done at once: no plan, one focused check |
+| Otherwise, could someone finish it from the request plus `git diff` alone? | medium | acceptance criteria and test list in the reply, then `pair`; no plan file, no approval |
+| Otherwise (several sessions, separate deliverables, external waits, long requirements) | large | a plan the user approves once, in the flow the PC chose (see [Planning flow](#planning-flow)) |
 | Does it touch a risk item? (irreversible data or migrations, security, contracts others consume, concurrency, deploy or environment config, no test that would catch a regression) | Critical | Critical rungs of `verification-ladders`, one independent review |
 | Non-trivial behavior or integration, no risk item | Standard | the smallest useful regression check |
 | Bounded and reversible | Basic | one focused check and a diff readback |
 
-The agent states the class in one line (`Class: large · Critical (migration)`) unless the work is small and Basic. The closing Risk line names the same item; an item found along the way raises assurance to Critical before closing. `core/instructions/05-change-safety-delivery-evidence.md` only says what each level requires.
+Size used to have two values, small and large. Small covered both a typo and a feature that takes one session, so the feature got no stated criteria and the typo could get a class line it did not need. Trivial work now skips the class line, and medium work states what done means before it is built, without the plan file and the approval that large work pays for.
+
+The agent states the class in one line (`Class: large · Critical (migration)`) unless the work is trivial. The closing Risk line names the same item; an item found along the way raises assurance to Critical before closing. `core/instructions/05-change-safety-delivery-evidence.md` only says what each level requires.
+
+## Planning flow
+
+### Why
+
+Slice Flow plans large work as a backlog that lives outside git and is deleted when the feature closes. Some repositories want the opposite: the plan and the specifications committed next to the code. OpenSpec does that, and it brings its own skills and CLI. Loading both flows in every session would spend instruction budget on a flow the PC does not use (see [Instruction size](#instruction-size)), so each PC picks one and its agents get only that one.
+
+### How
+
+`flow` in `~/.agent-harness/config.toml` is `slices` (the default) or `openspec`. `render` fills two placeholders: `{{flow}}` with the flow's name and `{{planning}}`, step 3 of `core/instructions/09-slice-flow.md`, with `core/flows/<flow>.md`. Everything else in that file is shared: authorization, the classifier, pacing, commits, the `Risk:` line, and the close.
+
+```mermaid
+flowchart TD
+    A[install] --> B{flow in config.toml}
+    B -- "slices (default)" --> S[Step 3 from core/flows/slices.md<br/>skills: backlog, story, pair]
+    B -- openspec --> O[Step 3 from core/flows/openspec.md<br/>skills: pair]
+    B -- anything else --> X[Stop: name the valid values]
+    O --> D[doctor: is the openspec CLI on PATH?]
+```
+
+Large work in the OpenSpec flow:
+
+```mermaid
+flowchart LR
+    I{openspec/ folder, openspec-* skills<br/>and CLI present?} -- no --> U[Stop: show the user<br/>openspec init or update]
+    I -- yes --> P[openspec-propose<br/>or resume an active change]
+    P --> V1[openspec validate name --strict]
+    V1 --> C[You approve the proposal]
+    C --> A[openspec-apply-change<br/>each task built with pair]
+    A --> V2[Suite and validate again]
+    V2 --> R[openspec-archive-change]
+    R --> M[Commit proposal waits for you]
+```
+
+- The harness ships no OpenSpec skill. `openspec init` writes them into each repository at the version of the installed CLI, so a copy in the harness would go stale.
+- `openspec validate <name> --strict` is the deterministic check: it exits 1 on a malformed proposal or delta. It also satisfies the evidence gate, which counts `openspec/config.yaml` and a change's `.openspec.yaml` as code.
+- The agent never runs `openspec init` or `openspec update`. Claude Code's sandbox denies writes to a repository's `.claude/skills`, and in a repository set up before OpenSpec 1.0, `init` without an interactive terminal removes its old marker blocks from `CLAUDE.md` and `AGENTS.md` without asking.
+- OpenSpec's skills ask questions at several points, and the archive skill hands the spec merge to a subagent. The flow says the harness wins on pace, questions, approvals, delegation, and commits.
+- Archiving happens in the same delivery, before the commit proposal. OpenSpec's documentation prefers archiving after the pull request merges, but the harness does not watch merges, and a change left active would have to be remembered in a later session.
+- Resuming needs no Engram mirror: `openspec list --json` shows the active changes and their task counts.
+- A task group in `tasks.md` counts as a slice, so "con pausas" and the one-commit-per-slice rule keep their meaning.
+- With `openspec`, `install` stops installing `backlog` and `story` and moves the installed copies to the backup folder. `pair` stays, because medium work and each OpenSpec task are built with it.
+
+### Limits
+
+- The choice is per PC, not per repository. On a PC set to `openspec`, large work in a repository without `openspec/` stops and asks for `openspec init`.
+- Checked with OpenSpec 1.6.0 and Claude Code on one Mac. Not checked: whether the Codex app loads skills from a repository's `.codex/skills` (newer OpenSpec documentation names `.agents/skills`), whether Copilot in VS Code lists the skills twice when a repository has both `.claude/skills` and `.github/skills`, and whether the terminal Codex and Copilot open has a CLI installed through nvm on its PATH.
+- Tests cover the rendered text, the installed skills, and the `doctor` finding. No test runs OpenSpec.
+- Spec Kit was considered as a third flow and left out: each flow needs its own instructions and tests, kept current with its tool.
 
 ## Verification ladders
 

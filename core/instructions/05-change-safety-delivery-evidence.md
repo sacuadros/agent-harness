@@ -2,7 +2,7 @@
 
 - Before non-trivial changes, confirm the repository root, Git status, exact scope, and unrelated work to preserve.
 - Before modifying global configuration, create a timestamped backup and identify the rollback path.
-- Assurance comes from the classification in Slice Flow (step 2), never from the implementation route or file count. Each level requires:
+- Assurance comes from the classification in {{flow}} (step 2), never from the implementation route or file count. Each level requires:
   - **Basic**: one focused check and exact-diff readback.
   - **Standard**: the smallest useful regression check; broaden validation or review only when evidence warrants it.
   - **Critical**: the Critical rungs of the `verification-ladders` skill for every surface the change touches, and one fresh independent review when permitted and useful.

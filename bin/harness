@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the agent harness from one source and install it into each agent's home.
 
-  harness render <agent>              print the rendered instructions for one agent
+  harness render <agent> [--flow]     print the rendered instructions for one agent
   harness install [--home] [--dry-run] [--agents a,b | --choose]
                                       write changed files for the agents you pick, backing up what they replace
   harness uninstall --agents a,b [--home] [--dry-run]
@@ -42,6 +42,10 @@ except ImportError:  # Windows Python ships without it: `pick_text` takes over
 
 REPO = Path(__file__).resolve().parent.parent
 INSTRUCTIONS = REPO / 'core' / 'instructions'
+# How large work is planned. Each PC picks one with `flow = "..."` in ~/.agent-harness/config.toml;
+# core/flows/<flow>.md fills {{planning}} and the name fills {{flow}}.
+FLOWS = {'slices': 'Slice Flow', 'openspec': 'OpenSpec Flow'}
+SLICES_SKILLS = {'backlog', 'story'}  # only the slices flow calls them
 SKILLS = REPO / 'core' / 'skills'
 SUBAGENTS = REPO / 'core' / 'agents'
 HOOKS = REPO / 'core' / 'hooks'
@@ -86,11 +90,12 @@ def sections(agent):
         yield stem.split('-', 1)[1], f.read_text(encoding='utf-8')
 
 
-def render(agent):
+def render(agent, flow):
     spec = AGENTS[agent]
+    planning = (REPO / 'core' / 'flows' / f'{flow}.md').read_text(encoding='utf-8').rstrip('\n')
     blocks = []
     for name, body in sections(agent):
-        for key, value in spec['vars'].items():
+        for key, value in {'planning': planning, 'flow': FLOWS[flow], **spec['vars']}.items():
             body = body.replace('{{' + key + '}}', value)
         blocks.append(f'<!-- {spec["marker"]}:{name} -->\n{body}<!-- /{spec["marker"]}:{name} -->\n')
     return '\n'.join(blocks)
@@ -105,10 +110,10 @@ def agent_file(path, agent):
     return path
 
 
-def skill_files(agent):
+def skill_files(agent, flow):
     files = {}
     for f in sorted(SKILLS.rglob('*')):
-        if not f.is_file():
+        if not f.is_file() or (flow != 'slices' and f.relative_to(SKILLS).parts[0] in SLICES_SKILLS):
             continue
         target = agent_file(f.relative_to(SKILLS), agent)
         if target is not None and (target not in files or target != f.relative_to(SKILLS)):
@@ -158,6 +163,14 @@ def pc_config(home):
     """~/.agent-harness/config.toml: per-PC settings that never go into this repo."""
     config = home / '.agent-harness' / 'config.toml'
     return tomllib.loads(config.read_text(encoding='utf-8')) if config.is_file() else {}
+
+
+def flow_of(home):
+    """The planning flow this PC chose; slices when its config does not say."""
+    flow = pc_config(home).get('flow', 'slices')
+    if flow not in FLOWS:
+        sys.exit(f'flow = {flow!r} in {home / ".agent-harness" / "config.toml"} must be one of: {", ".join(FLOWS)}')
+    return flow
 
 
 ENGRAM_CLOUD_KEYS = ('ENGRAM_CLOUD_SERVER', 'ENGRAM_CLOUD_AUTOSYNC')
@@ -644,11 +657,12 @@ def outputs(home, agent=None, agents=None):
     `agent` is the standalone mode: that agent alone, with its own hook copies."""
     standalone = agent == 'codex'
     agents = {agent} if agent else selected(home) if agents is None else agents
+    flow = flow_of(home)
     files = {}
     for name, spec in AGENTS.items():
         if name in agents:
-            files[spec['path']] = render(name).encode()
-        for rel, data in skill_files(name).items() if spec['skills'] else ():
+            files[spec['path']] = render(name, flow).encode()
+        for rel, data in skill_files(name, flow).items() if spec['skills'] else ():
             files[f'{spec["skills"]}/{rel}'] = data
     for folder, scripts in HOOK_SCRIPTS.items():
         if standalone:
@@ -664,7 +678,7 @@ def outputs(home, agent=None, agents=None):
     user = vscode_user(home)
     if 'copilot' in agents and user:  # VS Code's local chat reads profile prompts, not ~/.copilot
         header = "---\napplyTo: '**'\ndescription: agent-harness rules (edit the agent-harness repo)\n---\n\n"
-        files[f'{user}/prompts/agent-harness.instructions.md'] = (header + render('copilot')).encode()
+        files[f'{user}/prompts/agent-harness.instructions.md'] = (header + render('copilot', flow)).encode()
     if standalone or ('codex' in agents and (home / CODEX_CONFIG).is_file()):
         try:
             files[CODEX_CONFIG] = codex_config(home, register=standalone)
@@ -1304,6 +1318,9 @@ def doctor(home, agent=None):
                    'chat.agent.sandbox.fileSystem.userConfiguredPaths': {'deniedPaths': denied}}
             findings.append(f'VS Code agent sandbox is off or leaves credential folders readable; add to {vscode}: '
                             + json.dumps(add))
+    if flow_of(home) == 'openspec' and not shutil.which('openspec'):
+        findings.append('flow = "openspec" but the openspec CLI is not on PATH: its skills call it '
+                        '(install it with Node 22.12+: npm install -g @fission-ai/openspec)')
     seen, duplicates = set(), []
     for entry in os.environ.get('PATH', '').split(os.pathsep):
         if entry in seen and entry not in duplicates:
@@ -1490,7 +1507,9 @@ def stats(home, days):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='harness')
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('render').add_argument('agent', choices=AGENTS)
+    show = sub.add_parser('render')
+    show.add_argument('agent', choices=AGENTS)
+    show.add_argument('--flow', choices=FLOWS, default='slices', help='planning flow to render (default slices)')
     inst = sub.add_parser('install')
     inst.add_argument('--home', type=Path, default=Path.home())
     inst.add_argument('--dry-run', action='store_true')
@@ -1531,7 +1550,7 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding='utf-8', newline='\n')  # Windows: cp1252 and CRLF by default
     if args.command == 'render':
-        sys.stdout.write(render(args.agent))
+        sys.stdout.write(render(args.agent, args.flow))
     elif args.command == 'install':
         agents = None
         if args.agents is not None:

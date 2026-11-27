@@ -32,7 +32,8 @@ Copilot in VS Code currently receives `~/.agents/skills` through its default ski
 
 ## What the harness enforces
 
-- **Slice Flow instead of upfront specs.** Work starts as a backlog of one-line vertical slices, each refined just in time (`story`) and built test by test (`pair`). The user approves the backlog once; the agent then builds every slice and stops only for open requirements or decisions, alarms, or approvals. Commits and pushes always wait for the user. Saying "pair" or "con pausas" slows it down.
+- **Process sized to the work.** A trivial change is done at once with one focused check. Medium work states its acceptance criteria and test list in the reply and is built test by test (`pair`), with no plan file and no approval. Large work is planned first and approved once; the agent then builds all of it and stops only for open requirements or decisions, alarms, or approvals. Commits and pushes always wait for the user. Saying "pair" or "con pausas" slows it down.
+- **Slices or OpenSpec for large work.** By default large work is a backlog of one-line vertical slices, each refined just in time (`story`). A PC can plan large work as OpenSpec changes instead; see [Planning flow](#planning-flow-slices-or-openspec).
 - **Shared guards** (`core/hooks/harness_guards.py`): Conventional Commits without AI attribution; approval before SSH, PR, publish, deploy, a push that rewrites or deletes remote history, a recursive delete that reaches outside the project and the temp folders (also seen inside `bash -c`, `eval`, a subshell, and `find -delete`, and behind a wrapper such as `nohup`), or a git command that discards work with no undo (`reset --hard`, a forced `clean`, a forced `checkout` or `switch`, a `checkout` or `restore` of the whole tree, `branch -D`); Codex, whose prefix rules cannot match a path or a flag wherever it sits in the command, denies those last two instead of asking; no reads of credential files or Keychain secrets; no CodeGraph lifecycle commands; and a backup before any edit to global agent config. The same rules apply to MCP tools that run commands, such as Desktop Commander. A guard that errors or cannot start blocks the action rather than allowing it.
 - **Least privilege by configuration.** Claude subagents cannot spawn their own (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), Copilot subagents get an explicit `tools:` list without `agent`, and Codex shell commands do not inherit `ENGRAM_CLOUD_TOKEN`, which only its Engram MCP server receives.
 - **Code-graph discipline** (`core/hooks/enforce_memory_graph.py`) in Claude Code, Codex, and Copilot: query CodeGraph before broad searches in indexed repositories. In Copilot, CodeGraph runs from the terminal; these hooks have not been observed firing inside VS Code, where agent hooks are still in preview.
@@ -92,7 +93,7 @@ On Windows, prefix every `bin/harness` command in this README with `py -3`.
 | `bin/harness check` | Exit with status 1 on drift, broken config, a failed hook selftest, or literal secrets. |
 | `bin/harness doctor` | Read-only report: outdated Claude Code, Engram, and CodeGraph; Engram MCP and cloud status; Codex hook trust; Copilot hook execution status; leftover files. |
 | `bin/harness stats` | Read-only report from Claude Code transcripts: per week, the tool calls a hook denied and the turns a Stop hook blocked, by rule, and how many code-editing turns closed with a `Risk:` line. `--days N` sets the window (default 28). |
-| `bin/harness render <agent>` | Print the instructions rendered for one agent. |
+| `bin/harness render <agent>` | Print the instructions rendered for one agent. `--flow openspec` prints them for the OpenSpec flow. |
 | `bin/harness restore <timestamp>` | Undo an install from its backup folder. |
 | `bin/harness uninstall --agents <list>` | Remove the harness from one or more agents. |
 | `bin/harness clean` | List or delete old backups. |
@@ -113,7 +114,30 @@ Without a terminal or a saved choice, `install` covers Claude Code, Codex, and C
 python = "/opt/homebrew/bin/python3"                  # hook interpreter; default: python3 on PATH, py -3 on Windows
 engram_cloud_server = "https://engram.example.com"   # Engram cloud server; omit to keep Engram local
 sandbox = true                                        # OS-level sandbox; omit to leave it as it is
+flow = "openspec"                                     # how large work is planned: slices (default) or openspec
 ```
+
+### Planning flow: slices or OpenSpec
+
+`flow` decides how large work is planned on this PC. Run `install` after changing it; until then `check` reports drift. Trivial and medium work, the assurance levels, the `Risk:` line, and the commit rules are the same in both flows.
+
+| | `slices` (default) | `openspec` |
+|---|---|---|
+| Plan | A backlog in `.slices/<feature>.md`, kept out of git and mirrored to Engram | An OpenSpec change in `openspec/changes/<name>/`, committed with the code |
+| The one approval | The backlog | The proposal, after `openspec validate <name> --strict` passes |
+| Build | `story` for the next slice, then `pair` | `openspec-apply-change`, each task built with `pair` |
+| Close | Delete the working file | `openspec-archive-change` merges the specs and archives the change, before the commit proposal |
+| Skills installed | `backlog`, `story`, `pair` | `pair`; `install` moves `backlog` and `story` to the backup folder |
+
+Each agent's instructions carry one flow only. `bin/harness render <agent> --flow openspec` shows the other one without installing it.
+
+The harness does not install OpenSpec. With `flow = "openspec"`:
+
+- **Each PC** needs the `openspec` CLI on the PATH (Node 22.12 or newer, `npm install -g @fission-ai/openspec`). The OpenSpec skills call it on every step, and `doctor` reports when it is missing. OpenSpec sends anonymous usage data unless `OPENSPEC_TELEMETRY=0` is set.
+- **Each repository** needs `openspec init --tools claude,codex,github-copilot` once, and `openspec update` after a CLI upgrade. Commit what they write: `openspec/` and the `openspec-*` skills under `.claude/skills`, `.codex/skills`, and `.github/skills`. Run both yourself: the agent stops and shows the command. Claude Code's sandbox denies writes to a repository's `.claude/skills`, and in a repository set up before OpenSpec 1.0, `init` without an interactive terminal removes its old blocks from `CLAUDE.md` and `AGENTS.md` without asking.
+- Medium work that changes a requirement already in `openspec/specs/` goes through a change too, so the specs stay true.
+
+This was checked with OpenSpec 1.6.0 in Claude Code. Not yet checked: whether the Codex app loads skills from a repository's `.codex/skills` (newer OpenSpec documentation names `.agents/skills`), whether Copilot in VS Code lists the skills twice when a repository has both `.claude/skills` and `.github/skills`, and whether the PATH that Codex and Copilot give their terminal includes a CLI installed through nvm.
 
 ### OS-level sandbox (opt-in)
 

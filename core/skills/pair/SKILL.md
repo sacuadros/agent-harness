@@ -1,11 +1,11 @@
 ---
 name: pair
-description: "Build the current slice test by test with TDD. Use automatically once the story is written, when the user says \"pair\", or to implement the ## Now section of .slices/<feature>.md."
+description: "Build the current slice test by test with TDD. Use automatically once the story is written, for medium work, for an OpenSpec task, when the user says \"pair\", or to implement the ## Now section of .slices/<feature>.md."
 ---
 
 # Pair
 
-You drive and keep going; the user steps in only when needed. Work from `## Now` in `.slices/<feature>.md`, or from the user's request for small work.
+You drive and keep going; the user steps in only when needed. Work from `## Now` in `.slices/<feature>.md`. Without that file (medium work, or an OpenSpec task), work from the acceptance criteria you stated or from the task.
 
 ## Loop, one test at a time
 
@@ -20,10 +20,12 @@ Continue through the test list without waiting. When the user says "pair", stop 
 ## Alarms: stop and report
 
 - **Loop:** the same failure twice after a fix attempt. Load the `systematic-debugging` skill and find the root cause before a third attempt; report if it stays unsolved.
-- **Scope creep:** code, fields, endpoints, abstractions, or files that `## Now` (for small work, the user's request) does not need, or a contract with no `S#`. Remove them or ask.
+- **Scope creep:** code, fields, endpoints, abstractions, or files that `## Now` (without one, the stated criteria or the task) does not need, or a contract with no `S#`. Remove them or ask.
 - **Test cheating:** editing, skipping, deleting, or weakening a test, or special-casing test input, to get green.
 
 ## Close the slice
+
+Steps 2, 3, and 5 apply only when a `.slices/` file exists.
 
 1. Run the suite once; a failure reopens the slice. Check every acceptance criterion against observed evidence: test output, or a command or URL the user can use to try it.
 2. In the working file, check the slice in `## Backlog`, clear `## Now`, and add a Log line with the evidence and any `### Suggestions`. Update the Engram mirror.

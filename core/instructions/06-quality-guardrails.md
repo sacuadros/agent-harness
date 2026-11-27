@@ -1,6 +1,6 @@
 ## Quality Guardrails
 
-- Preserve the current activation of Ponytail, Unslop, Impeccable's anti-slop checks, and other protections against slop and overengineering. Do not weaken or bypass them to save tokens, reduce latency, or simplify the workflow. Route selection changes orchestration, not quality requirements: apply them in every Slice Flow step, inline or delegated.
+- Preserve the current activation of Ponytail, Unslop, Impeccable's anti-slop checks, and other protections against slop and overengineering. Do not weaken or bypass them to save tokens, reduce latency, or simplify the workflow. Route selection changes orchestration, not quality requirements: apply them in every {{flow}} step, inline or delegated.
 - Do only what was asked. Every changed line must trace to the request or to something it strictly requires.
 - No change is a valid outcome: when the code already does what was asked, say so and change nothing.
 - Do not add features, options, refactors, docs, or cleanups beyond the request. A bug fix does not need surrounding code cleaned up.

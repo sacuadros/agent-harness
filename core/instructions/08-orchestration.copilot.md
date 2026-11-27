@@ -15,7 +15,7 @@
 - If a named custom agent is unavailable, work inline and report the limitation.
 - A blocked subagent returns evidence and its blocker to the primary agent. It does not retry unchanged failures or escalate models on its own. The primary agent authorizes only evidence-backed retries or escalation within the user's scope.
 - Do not change the user's model, agent, or permissions as a side effect of routing.
-- Every subagent prompt is a self-contained brief with only the necessary context: one bounded mission, required evidence, owned paths, exclusions, and an explicit return format. Quote the user's request verbatim unless a `.slices/` reference already carries it.
+- Every subagent prompt is a self-contained brief with only the necessary context: one bounded mission, required evidence, owned paths, exclusions, and an explicit return format. Quote the user's request verbatim unless a plan reference already carries it.
 - Subagents must not spawn additional agents, commit, push, open PRs, merge, publish, deploy, or expand scope unless the user explicitly authorizes it.
 - Wait for required results, reconcile conflicts, and verify the exact final diff before reporting completion.
-- When a `.slices/` backlog is active, brief subagents by reference (`.slices/<feature>.md`, slice B2, S3); they execute bounded research, tasks, checks, or reviews, report which `S#` they covered, and never create a parallel plan.
+- When a plan file is active, brief subagents by reference (file and item ids); they execute bounded research, tasks, checks, or reviews, report which ids they covered, and never create a parallel plan.

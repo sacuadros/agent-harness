@@ -52,59 +52,84 @@ def run(*args):
     return subprocess.run([sys.executable, str(HARNESS), *args], capture_output=True, encoding='utf-8')
 
 
+FLOWS = ('slices', 'openspec')
+
+
+def renders():
+    """(label, text) for every agent in every planning flow."""
+    return [(f'{agent} {flow}', harness('render', agent, '--flow', flow))
+            for agent in ('claude', 'codex', 'copilot') for flow in FLOWS]
+
+
 class SliceFlowPacing(unittest.TestCase):
-    """Every agent runs slices on its own after one backlog approval; commits wait for the user."""
+    """Every agent builds on its own after one plan approval, in either flow; commits wait for the user."""
 
     def test_every_agent_gets_the_pacing_contract(self):
-        for agent in ('claude', 'codex', 'copilot'):
-            text = harness('render', agent)
-            for rule in ('one checkpoint before building: backlog approval',
+        for agent, text in renders():
+            for rule in ('one checkpoint before building: ',
                          'Commits and pushes always wait for the user', 'ask everything pending in one round'):
                 self.assertIn(rule, text, agent)
             self.assertNotIn('sin pausas', text, agent)
 
     def test_every_agent_gets_the_scope_contract(self):
-        for agent in ('claude', 'codex', 'copilot'):
-            text = harness('render', agent)
+        for agent, text in renders():
             for rule in ('Do only what was asked', 'ask instead of assuming',
                          'leave it undone unless the user says to apply it'):
                 self.assertIn(rule, text, agent)
             self.assertNotIn('recording assumed answers', text, agent)
 
     def test_every_agent_gets_one_classifier(self):
-        for agent in ('claude', 'codex', 'copilot'):
-            text = harness('render', agent)
+        for agent, text in renders():
             self.assertIn('Classify before the first write', text, agent)
             self.assertIn('`verification-ladders`', text, agent)
             self.assertEqual(text.count('contracts others consume'), 1, agent)  # the risk items are listed once
             self.assertNotIn('Select assurance independently', text, agent)
 
+    def test_every_agent_gets_three_sizes(self):
+        for agent, text in renders():
+            for size in ('*Trivial*', '*Medium*', '*Large*'):
+                self.assertEqual(text.count(size), 1, agent)
+            self.assertIn('unless the work is trivial', text, agent)
+            self.assertNotIn('Small work', text, agent)
+
+    def test_each_flow_renders_only_its_own_planning(self):
+        own = {'slices': ('## Slice Flow', 'backlog approval', '`.slices/<feature>.md`', '`story`'),
+               'openspec': ('## OpenSpec Flow', 'proposal approval', '`openspec-propose`', '`openspec-apply-change`',
+                            '`openspec-archive-change`', '`openspec validate <name> --strict`')}
+        for agent, text in renders():
+            flow = agent.split()[1]
+            for phrase in own[flow]:
+                self.assertIn(phrase, text, agent)
+            for other in set(FLOWS) - {flow}:
+                for phrase in own[other]:
+                    self.assertNotIn(phrase, text, agent)
+            self.assertNotIn('{{', text, agent)
+        self.assertNotIn('.slices', harness('render', 'codex', '--flow', 'openspec'))
+        self.assertEqual(harness('render', 'claude'), harness('render', 'claude', '--flow', 'slices'))  # the default
+
     def test_memory_saves_grouped_conclusions_without_a_summary_gate(self):
-        for agent in ('claude', 'codex', 'copilot'):
-            text = harness('render', agent)
+        for agent, text in renders():
             self.assertNotIn('Before saying "done"', text, agent)
             self.assertIn('grouped by topic', text, agent)
 
     def test_no_change_is_a_valid_outcome(self):
-        for agent in ('claude', 'codex', 'copilot'):
-            self.assertIn('No change is a valid outcome', harness('render', agent), agent)
+        for agent, text in renders():
+            self.assertIn('No change is a valid outcome', text, agent)
 
     def test_context7_is_required_before_library_code(self):
         rule = ('Before writing code against a library, framework, SDK, CLI, or cloud API, read its current '
                 'documentation with Context7. If Context7 is unavailable, use the official documentation and say so.')
-        for agent in ('claude', 'codex', 'copilot'):
-            self.assertEqual(harness('render', agent).count(rule), 1, agent)
+        for agent, text in renders():
+            self.assertEqual(text.count(rule), 1, agent)
 
     def test_commit_rules_are_stated_once(self):
-        for agent in ('claude', 'codex', 'copilot'):
-            text = harness('render', agent)
+        for agent, text in renders():
             self.assertEqual(text.count('Commits and pushes always wait for the user'), 1, agent)
             self.assertNotIn('remain separately authorized', text, agent)
             self.assertLessEqual(text.count('Co-Authored-By'), 1, agent)
 
     def test_delivery_reuses_evidence_instead_of_verifying_again(self):
-        for agent in ('claude', 'codex', 'copilot'):
-            text = harness('render', agent)
+        for agent, text in renders():
             self.assertIn('reuses the checks already run on that exact candidate', text, agent)
             self.assertNotIn('revalidate the intended candidate', text, agent)
             self.assertIn('watch CI only when asked', text, agent)
@@ -112,9 +137,9 @@ class SliceFlowPacing(unittest.TestCase):
         self.assertNotIn('then the suite once', pair)  # the suite runs per slice, not per test
 
     def test_rendered_instructions_stay_under_the_size_budget(self):
-        for agent in ('claude', 'codex', 'copilot'):
+        for agent, text in renders():
             # About 22,800 before the trim. Deduplication alone reached about 20,000; going lower means dropping rules.
-            self.assertLessEqual(len(harness('render', agent)), 20350, agent)
+            self.assertLessEqual(len(text), 20350, agent)
 
     def test_skills_do_not_wait_or_commit_on_their_own(self):
         skills = REPO / 'core' / 'skills'
@@ -406,14 +431,68 @@ class Selection(unittest.TestCase):
         self.assertNotIn('claude', (self.home / '.agent-harness' / 'agents').read_text(encoding='utf-8').split())
 
 
+class Flow(unittest.TestCase):
+    """Each PC picks its planning flow in ~/.agent-harness/config.toml; install follows it."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        for folder in ('.claude', '.codex'):
+            (self.home / folder).mkdir()
+        (self.home / '.agent-harness').mkdir()
+
+    def choose(self, flow):
+        (self.home / '.agent-harness' / 'config.toml').write_text(f'flow = "{flow}"\n', encoding='utf-8', newline='\n')
+
+    def skills(self, folder):
+        return {d.name for d in (self.home / folder / 'skills').iterdir()}
+
+    def test_install_follows_the_flow_this_pc_chose(self):
+        harness('install', '--home', str(self.home))
+        self.assertEqual(self.skills('.claude'), MANAGED_SKILLS)
+        self.choose('openspec')
+        self.assertNotEqual(run('check', '--home', str(self.home)).returncode, 0)  # the choice changed, nothing installed yet
+        harness('install', '--home', str(self.home))
+        for agent, path in (('claude', '.claude/CLAUDE.md'), ('codex', '.codex/AGENTS.md')):
+            self.assertEqual((self.home / path).read_text(encoding='utf-8'), harness('render', agent, '--flow', 'openspec'))
+        for folder in ('.claude', '.agents'):  # the slices skills go, `pair` builds in both flows
+            self.assertEqual(self.skills(folder), MANAGED_SKILLS - {'backlog', 'story'})
+        self.assertEqual(run('check', '--home', str(self.home)).stdout.strip(), 'ok')
+
+    def test_an_unknown_flow_stops_the_install(self):
+        self.choose('speckit')
+        result = run('install', '--home', str(self.home))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('slices, openspec', result.stdout + result.stderr)
+        self.assertFalse((self.home / '.claude' / 'CLAUDE.md').exists())
+
+    @unittest.skipIf(os.name == 'nt', 'the fake openspec is a shell script')
+    def test_doctor_reports_a_missing_openspec_cli(self):
+        bin_dir = Path(tempfile.mkdtemp())
+        base = os.pathsep.join(['/usr/bin', '/bin'])
+
+        def doctor(path):
+            return subprocess.run([sys.executable, str(HARNESS), 'doctor', '--home', str(self.home)], capture_output=True,
+                                  encoding='utf-8', env={**os.environ, 'PATH': path}).stdout
+
+        self.assertNotIn('openspec', doctor(base))  # slices needs no CLI
+        self.choose('openspec')
+        self.assertIn('the openspec CLI is not on PATH', doctor(base))
+        fake = bin_dir / 'openspec'
+        fake.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8', newline='\n')
+        fake.chmod(0o755)
+        self.assertNotIn('openspec', doctor(os.pathsep.join([str(bin_dir), base])))
+
+
 class Render(unittest.TestCase):
     @unittest.skipUnless((HOME / '.claude' / 'CLAUDE.md').is_file(), 'no installed CLAUDE.md')
     def test_claude_matches_installed(self):
-        self.assertEqual(harness('render', 'claude'), (HOME / '.claude' / 'CLAUDE.md').read_text(encoding='utf-8'))
+        self.assertEqual(harness('render', 'claude', '--flow', load_harness().flow_of(HOME)),
+                         (HOME / '.claude' / 'CLAUDE.md').read_text(encoding='utf-8'))
 
     @unittest.skipUnless((HOME / '.codex' / 'AGENTS.md').is_file(), 'no installed AGENTS.md')
     def test_codex_matches_installed(self):
-        self.assertEqual(harness('render', 'codex'), (HOME / '.codex' / 'AGENTS.md').read_text(encoding='utf-8'))
+        self.assertEqual(harness('render', 'codex', '--flow', load_harness().flow_of(HOME)),
+                         (HOME / '.codex' / 'AGENTS.md').read_text(encoding='utf-8'))
 
 
 class Install(unittest.TestCase):
